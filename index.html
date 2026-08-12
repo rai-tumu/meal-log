@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#1a936f">
+  <title>MealLog - 食事カロリー記録</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header class="app-header">
+    <h1>🍽 MealLog</h1>
+    <span id="sync-indicator" class="sync-indicator" hidden></span>
+  </header>
+
+  <main id="main">
+    <!-- ============ 記録画面 ============ -->
+    <section id="view-record" class="view active">
+      <div class="input-methods">
+        <label class="btn btn-primary btn-large" for="photo-input">
+          📷 写真で記録
+          <input type="file" id="photo-input" accept="image/*" capture="environment" hidden>
+        </label>
+        <label class="btn btn-primary btn-large" for="photo-pick">
+          🖼 アルバムから
+          <input type="file" id="photo-pick" accept="image/*" hidden>
+        </label>
+      </div>
+
+      <div class="text-entry">
+        <input type="text" id="text-input" placeholder="例: 牛丼 並盛、味噌汁" enterkeyhint="send">
+        <button class="btn btn-primary" id="analyze-text-btn">解析</button>
+      </div>
+
+      <div id="photo-preview-wrap" hidden>
+        <img id="photo-preview" alt="食事の写真プレビュー">
+      </div>
+
+      <div id="analyze-status" class="analyze-status" hidden></div>
+
+      <!-- 解析結果 / 手動入力エディタ -->
+      <div id="meal-editor" class="meal-editor" hidden>
+        <h2 id="editor-title">記録内容</h2>
+        <div class="datetime-row">
+          <input type="date" id="meal-date">
+          <input type="time" id="meal-time">
+        </div>
+        <div id="items-list"></div>
+        <button class="btn btn-ghost" id="add-item-btn">＋ 品目を追加</button>
+        <input type="text" id="meal-note" placeholder="メモ(店名など・任意)">
+        <div class="editor-total">合計: <strong id="editor-total-kcal">0</strong> kcal</div>
+        <div class="editor-actions">
+          <button class="btn btn-ghost" id="cancel-meal-btn">キャンセル</button>
+          <button class="btn btn-primary" id="save-meal-btn">保存する</button>
+        </div>
+      </div>
+
+      <button class="btn btn-ghost" id="manual-entry-btn">✏️ 手動で入力する</button>
+
+      <div id="today-summary" class="today-summary"></div>
+    </section>
+
+    <!-- ============ 履歴画面 ============ -->
+    <section id="view-history" class="view">
+      <div id="history-chart" class="history-chart"></div>
+      <div id="history-list" class="history-list"></div>
+    </section>
+
+    <!-- ============ エクスポート画面 ============ -->
+    <section id="view-export" class="view">
+      <h2>データのエクスポート</h2>
+      <p class="hint">記録をテキストファイルとしてダウンロードします。Markdown形式はそのままAI(LLM)に渡して分析に使えます。</p>
+      <div class="date-range">
+        <label>開始 <input type="date" id="export-from"></label>
+        <label>終了 <input type="date" id="export-to"></label>
+      </div>
+      <div class="export-buttons">
+        <button class="btn btn-primary" id="export-md-btn">📄 Markdown (.md)</button>
+        <button class="btn btn-primary" id="export-json-btn">🧩 JSON (.json)</button>
+        <button class="btn btn-primary" id="export-csv-btn">📊 CSV (.csv)</button>
+      </div>
+      <div id="export-preview" class="export-preview" hidden>
+        <h3>プレビュー</h3>
+        <pre id="export-preview-text"></pre>
+      </div>
+    </section>
+
+    <!-- ============ 設定画面 ============ -->
+    <section id="view-settings" class="view">
+      <h2>設定</h2>
+
+      <details class="settings-group" open>
+        <summary>🤖 AI解析 (Gemini)</summary>
+        <label class="field">
+          <span>Gemini APIキー</span>
+          <input type="password" id="setting-gemini-key" placeholder="AIza..." autocomplete="off">
+        </label>
+        <p class="hint">Google AI Studio (aistudio.google.com) で無料取得できます。クレジットカード登録不要・課金なし。</p>
+        <button class="btn btn-ghost" id="test-gemini-btn">接続テスト</button>
+      </details>
+
+      <details class="settings-group">
+        <summary>☁️ GitHub同期</summary>
+        <label class="field">
+          <span>リポジトリ (owner/name)</span>
+          <input type="text" id="setting-github-repo" placeholder="username/meal-log-data" autocomplete="off">
+        </label>
+        <label class="field">
+          <span>アクセストークン (Fine-grained PAT)</span>
+          <input type="password" id="setting-github-token" placeholder="github_pat_..." autocomplete="off">
+        </label>
+        <p class="hint">対象リポジトリのみ・Contents: Read/Write 権限のトークンを発行してください。</p>
+        <button class="btn btn-ghost" id="test-github-btn">接続テスト</button>
+        <button class="btn btn-ghost" id="sync-now-btn">今すぐ同期</button>
+        <p class="hint" id="last-sync-info"></p>
+      </details>
+
+      <details class="settings-group">
+        <summary>🎯 目標</summary>
+        <label class="field">
+          <span>1日の目標カロリー (kcal)</span>
+          <input type="number" id="setting-target-kcal" placeholder="2000" min="0" step="50">
+        </label>
+      </details>
+
+      <button class="btn btn-primary" id="save-settings-btn">設定を保存</button>
+      <p class="hint">キーやトークンはこの端末のブラウザ内(localStorage)にのみ保存されます。</p>
+    </section>
+  </main>
+
+  <nav class="tab-bar">
+    <button class="tab active" data-view="record">📝<span>記録</span></button>
+    <button class="tab" data-view="history">📅<span>履歴</span></button>
+    <button class="tab" data-view="export">📤<span>出力</span></button>
+    <button class="tab" data-view="settings">⚙️<span>設定</span></button>
+  </nav>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
