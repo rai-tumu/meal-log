@@ -2,6 +2,7 @@
 import * as db from './db.js';
 import * as gemini from './gemini.js';
 import * as github from './github.js';
+import { buildProfile, itemRanking } from './suggest.js';
 import { toMarkdown, toJSON, toCSV, download, mealTotal } from './export.js';
 
 const $ = (sel) => document.querySelector(sel);
@@ -40,15 +41,17 @@ function nowTimeStr(d = new Date()) {
 }
 
 // ---------- タブ切り替え ----------
+function switchTab(view) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.view === view));
+  document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+  $(`#view-${view}`).classList.add('active');
+  if (view === 'history') renderHistory();
+  if (view === 'record') renderTodaySummary();
+  if (view === 'suggest') renderTasteRanking();
+}
+
 document.querySelectorAll('.tab').forEach(tab => {
-  tab.addEventListener('click', () => {
-    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-    document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
-    tab.classList.add('active');
-    $(`#view-${tab.dataset.view}`).classList.add('active');
-    if (tab.dataset.view === 'history') renderHistory();
-    if (tab.dataset.view === 'record') renderTodaySummary();
-  });
+  tab.addEventListener('click', () => switchTab(tab.dataset.view));
 });
 
 // ---------- 記録画面: エディタ ----------
@@ -327,6 +330,7 @@ async function renderHistory() {
 function sourceIcon(source) {
   if (source === 'photo') return ' 📷';
   if (source === 'text') return ' 💬';
+  if (source === 'suggest') return ' 💡';
   return '';
 }
 
@@ -378,6 +382,116 @@ function renderChart(meals) {
 
   $('#history-chart').innerHTML =
     `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="直近14日間のカロリーグラフ">${bars}${targetLine}</svg>`;
+}
+
+// ---------- 提案画面 ----------
+let suggestMode = 'any';
+
+document.querySelectorAll('.mode-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    suggestMode = btn.dataset.mode;
+    document.querySelectorAll('.mode-btn').forEach(b => {
+      const on = b === btn;
+      b.classList.toggle('active', on);
+      b.setAttribute('aria-checked', String(on));
+    });
+  });
+});
+
+/** APIキーがなくても動く、ローカル集計だけのランキング表示 */
+async function renderTasteRanking() {
+  const meals = await db.getAllMeals();
+  const from = new Date();
+  from.setDate(from.getDate() - 90);
+  const period = meals.filter(m => m.date >= todayStr(from));
+  const ranking = itemRanking(period, 10);
+  const el = $('#taste-ranking');
+
+  if (ranking.length === 0) {
+    el.innerHTML = '<p class="empty-message">まだ記録がありません。<br>何回か記録すると、ここに好みの傾向が出ます。</p>';
+    return;
+  }
+
+  el.innerHTML = '';
+  ranking.forEach((r, i) => {
+    const row = document.createElement('div');
+    row.className = 'rank-row';
+    row.innerHTML = `<span class="rank-no">${i + 1}</span><span class="rank-name"></span><span class="rank-count">${r.count}回</span>`;
+    row.querySelector('.rank-name').textContent = r.name;
+    el.appendChild(row);
+  });
+}
+
+function setSuggestStatus(msg, isError = false) {
+  const el = $('#suggest-status');
+  el.textContent = msg;
+  el.classList.toggle('error', isError);
+  el.hidden = !msg;
+}
+
+$('#suggest-btn').addEventListener('click', async (e) => {
+  if (!settings.geminiKey) {
+    setSuggestStatus('提案にはGemini APIキーが必要です。設定画面で登録してください。下の「よく食べているもの」はキーなしでも見られます。', true);
+    return;
+  }
+
+  const meals = await db.getAllMeals();
+  const profile = buildProfile(meals, Number(settings.targetKcal) || 0);
+
+  e.target.disabled = true;
+  setSuggestStatus('🤔 好みを分析して候補を考えています...');
+  $('#suggest-results').innerHTML = '';
+
+  try {
+    const suggestions = await gemini.suggestMeals({
+      apiKey: settings.geminiKey,
+      profile,
+      mode: suggestMode,
+      mood: $('#mood-input').value,
+    });
+    if (suggestions.length === 0) {
+      setSuggestStatus('候補を出せませんでした。条件を変えてもう一度試してください。', true);
+      return;
+    }
+    setSuggestStatus('');
+    renderSuggestions(suggestions);
+  } catch (err) {
+    setSuggestStatus(`⚠️ ${err.message}`, true);
+  } finally {
+    e.target.disabled = false;
+  }
+});
+
+function renderSuggestions(suggestions) {
+  const wrap = $('#suggest-results');
+  wrap.innerHTML = '';
+  for (const s of suggestions) {
+    const card = document.createElement('div');
+    card.className = 'suggest-card';
+    const isCook = s.type === '自炊';
+    card.innerHTML = `
+      <div class="sc-head">
+        <span class="sc-name"></span>
+        <span class="sc-kcal">約 ${s.kcal} kcal</span>
+      </div>
+      <span class="sc-badge ${isCook ? 'cook' : ''}">${isCook ? '🍳 自炊' : '🏪 外食'}</span>
+      <p class="sc-reason"></p>
+      ${s.hint ? '<p class="sc-hint"></p>' : ''}
+      <button class="btn btn-ghost sc-pick">これにする(記録へ)</button>`;
+    card.querySelector('.sc-name').textContent = s.name;
+    card.querySelector('.sc-reason').textContent = s.reason;
+    if (s.hint) card.querySelector('.sc-hint').textContent = s.hint;
+    card.querySelector('.sc-pick').addEventListener('click', () => {
+      switchTab('record');
+      openEditor({
+        items: [{ name: s.name, kcal: s.kcal, protein: 0, fat: 0, carbs: 0 }],
+        source: 'suggest',
+        title: '提案から記録',
+      });
+      toast('カロリーは目安です。実際に合わせて修正してください');
+    });
+    wrap.appendChild(card);
+  }
 }
 
 // ---------- エクスポート画面 ----------

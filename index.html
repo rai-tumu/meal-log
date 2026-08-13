@@ -69,6 +69,28 @@
       <div id="history-list" class="history-list"></div>
     </section>
 
+    <!-- ============ 提案画面 ============ -->
+    <section id="view-suggest" class="view">
+      <div class="suggest-controls">
+        <div class="mode-toggle" role="radiogroup" aria-label="食べ方">
+          <button class="mode-btn active" data-mode="any" role="radio" aria-checked="true">おまかせ</button>
+          <button class="mode-btn" data-mode="eatout" role="radio" aria-checked="false">外食</button>
+          <button class="mode-btn" data-mode="cook" role="radio" aria-checked="false">自炊</button>
+        </div>
+        <input type="text" id="mood-input" placeholder="気分・リクエスト(任意) 例: さっぱり">
+        <button class="btn btn-primary btn-large" id="suggest-btn">💡 提案してもらう</button>
+      </div>
+
+      <div id="suggest-status" class="analyze-status" hidden></div>
+      <div id="suggest-results" class="suggest-results"></div>
+
+      <div class="taste-profile">
+        <h2>よく食べているもの</h2>
+        <p class="hint">直近90日の記録から集計しています。この傾向をもとに提案します。</p>
+        <div id="taste-ranking"></div>
+      </div>
+    </section>
+
     <!-- ============ エクスポート画面 ============ -->
     <section id="view-export" class="view">
       <h2>データのエクスポート</h2>
@@ -134,6 +156,7 @@
   <nav class="tab-bar">
     <button class="tab active" data-view="record">📝<span>記録</span></button>
     <button class="tab" data-view="history">📅<span>履歴</span></button>
+    <button class="tab" data-view="suggest">💡<span>提案</span></button>
     <button class="tab" data-view="export">📤<span>出力</span></button>
     <button class="tab" data-view="settings">⚙️<span>設定</span></button>
   </nav>
