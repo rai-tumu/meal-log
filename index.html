@@ -41,9 +41,9 @@
 
       <div id="analyze-status" class="analyze-status" hidden></div>
 
-      <!-- テンプレートから記録 -->
-      <div class="template-section">
-        <div class="template-head">🍚 テンプレート</div>
+      <!-- テンプレートから記録(描画完了までは hidden。JSが古い場合に見出しだけ残るのを防ぐ) -->
+      <details class="template-section" id="template-section" hidden>
+        <summary>🍚 テンプレート</summary>
         <div id="template-bar" class="template-bar"></div>
         <div id="tpl-picker" class="tpl-picker" hidden>
           <div id="tpl-picker-name" class="tpl-picker-name"></div>
@@ -58,7 +58,7 @@
             <button class="btn btn-primary" id="tpl-add-btn">追加する</button>
           </div>
         </div>
-      </div>
+      </details>
 
       <!-- 解析結果 / 手動入力エディタ -->
       <div id="meal-editor" class="meal-editor" hidden>

@@ -49,6 +49,7 @@ function switchTab(view) {
   if (view === 'history') renderHistory();
   if (view === 'record') { renderTodaySummary(); renderTemplateBar(); }
   if (view === 'suggest') renderTasteRanking();
+  if (view === 'settings') renderTemplateManager();
 }
 
 document.querySelectorAll('.tab').forEach(tab => {
@@ -197,11 +198,31 @@ $('#manual-entry-btn').addEventListener('click', () => {
 let pickerTpl = null;
 let pickerQty = 0;
 
+// 使用回数は端末ローカルのみで保持する。テンプレ本体のupdated_atを触ると
+// GitHub同期のマージで他端末の編集を上書きしてしまうため。
+const TPL_USAGE_KEY = 'meallog-tpl-usage';
+const TPL_OPEN_KEY = 'meallog-tpl-open';
+
+function getTplUsage() {
+  try { return JSON.parse(localStorage.getItem(TPL_USAGE_KEY)) || {}; } catch { return {}; }
+}
+
+function bumpTplUsage(id) {
+  const usage = getTplUsage();
+  usage[id] = (usage[id] || 0) + 1;
+  localStorage.setItem(TPL_USAGE_KEY, JSON.stringify(usage));
+}
+
 async function renderTemplateBar() {
   const bar = $('#template-bar');
+  const section = $('#template-section');
   const templates = await db.getAllTemplates();
+  const usage = getTplUsage();
+  // よく使う順 → 名前順
+  templates.sort((a, b) =>
+    (usage[b.id] || 0) - (usage[a.id] || 0) || a.name.localeCompare(b.name, 'ja'));
+
   bar.innerHTML = '';
-  document.querySelector('.template-section').hidden = templates.length === 0;
   for (const t of templates) {
     const chip = document.createElement('button');
     chip.className = 'tpl-chip';
@@ -209,7 +230,13 @@ async function renderTemplateBar() {
     chip.addEventListener('click', () => openTplPicker(t, chip));
     bar.appendChild(chip);
   }
+  section.open = localStorage.getItem(TPL_OPEN_KEY) === '1';
+  section.hidden = templates.length === 0;
 }
+
+$('#template-section').addEventListener('toggle', (e) => {
+  localStorage.setItem(TPL_OPEN_KEY, e.target.open ? '1' : '0');
+});
 
 function openTplPicker(t, chip) {
   pickerTpl = t;
@@ -249,6 +276,7 @@ $('#tpl-cancel-btn').addEventListener('click', closeTplPicker);
 $('#tpl-add-btn').addEventListener('click', () => {
   if (!pickerTpl) return;
   const item = tpl.templateToItem(pickerTpl, pickerQty);
+  bumpTplUsage(pickerTpl.id); // 並び順は次に記録画面を開いたときに反映
   if ($('#meal-editor').hidden) {
     openEditor({ items: [item], source: 'template', title: 'テンプレートから記録' });
   } else {
@@ -878,5 +906,14 @@ tpl.ensureSeeds()
   .finally(runSync);
 
 if ('serviceWorker' in navigator) {
+  // 新しいSWが有効化されたら1度だけ自動リロードする。
+  // デプロイ直後にHTMLだけ新しくCSS/JSが古いまま残る事故を自己修復するため。
+  const hadController = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!hadController) return; // 初回インストール時はリロード不要
+    if (sessionStorage.getItem('meallog-sw-reloaded')) return; // ループ防止
+    sessionStorage.setItem('meallog-sw-reloaded', '1');
+    location.reload();
+  });
   navigator.serviceWorker.register('sw.js').catch(() => {});
 }

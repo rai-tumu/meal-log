@@ -20,8 +20,15 @@ function openDB() {
         db.createObjectStore(TPL_STORE, { keyPath: 'id' });
       }
     };
-    req.onsuccess = () => resolve(req.result);
+    req.onsuccess = () => {
+      const db = req.result;
+      // 他のタブがバージョン升級を始めたら接続を手放す(升級のブロックを防ぐ)
+      db.onversionchange = () => { db.close(); dbPromise = null; };
+      resolve(db);
+    };
     req.onerror = () => reject(req.error);
+    // 別タブが古いバージョンで開いたままだと升級できない
+    req.onblocked = () => reject(new Error('別のタブでアプリが開いています。すべて閉じてから再読み込みしてください'));
   });
   return dbPromise;
 }
@@ -97,6 +104,9 @@ export async function getTemplate(id) {
 /** 全件(削除済み含む)— 同期・シード投入用 */
 export async function getAllTemplatesRaw() {
   const db = await openDB();
+  // 古いバージョンのdb.jsがキャッシュから読み込まれた場合などにストアが無いことがある。
+  // 例外にせず空配列を返し、テンプレート機能だけ静かに無効化する。
+  if (!db.objectStoreNames.contains(TPL_STORE)) return [];
   return reqToPromise(tx(db, 'readonly', TPL_STORE).getAll());
 }
 
