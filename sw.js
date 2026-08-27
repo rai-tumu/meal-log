@@ -1,5 +1,5 @@
 // Service Worker — アプリシェルをキャッシュしてオフラインでも起動可能にする
-const CACHE_NAME = 'meallog-v2';
+const CACHE_NAME = 'meallog-v3';
 const APP_SHELL = [
   './',
   './index.html',
@@ -10,6 +10,8 @@ const APP_SHELL = [
   './js/github.js',
   './js/export.js',
   './js/suggest.js',
+  './js/templates.js',
+  './js/templates-seed.js',
   './manifest.json',
   './icons/icon.svg',
   './icons/icon-192.png',

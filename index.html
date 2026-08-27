@@ -41,6 +41,25 @@
 
       <div id="analyze-status" class="analyze-status" hidden></div>
 
+      <!-- テンプレートから記録 -->
+      <div class="template-section">
+        <div class="template-head">🍚 テンプレート</div>
+        <div id="template-bar" class="template-bar"></div>
+        <div id="tpl-picker" class="tpl-picker" hidden>
+          <div id="tpl-picker-name" class="tpl-picker-name"></div>
+          <div class="tpl-stepper">
+            <button class="btn btn-ghost tpl-step-btn" id="tpl-qty-minus" aria-label="減らす">−</button>
+            <span id="tpl-qty-display" class="tpl-qty-display"></span>
+            <button class="btn btn-ghost tpl-step-btn" id="tpl-qty-plus" aria-label="増やす">＋</button>
+          </div>
+          <div id="tpl-picker-preview" class="tpl-picker-preview"></div>
+          <div class="editor-actions">
+            <button class="btn btn-ghost" id="tpl-cancel-btn">キャンセル</button>
+            <button class="btn btn-primary" id="tpl-add-btn">追加する</button>
+          </div>
+        </div>
+      </div>
+
       <!-- 解析結果 / 手動入力エディタ -->
       <div id="meal-editor" class="meal-editor" hidden>
         <h2 id="editor-title">記録内容</h2>
@@ -146,6 +165,45 @@
           <span>1日の目標カロリー (kcal)</span>
           <input type="number" id="setting-target-kcal" placeholder="2000" min="0" step="50">
         </label>
+      </details>
+
+      <details class="settings-group">
+        <summary>🍚 食品テンプレート</summary>
+        <p class="hint">記録画面からワンタップで追加できる定番の品目です。栄養値は日本食品標準成分表2020年版(八訂)に基づいています。</p>
+        <div id="template-manager-list"></div>
+        <button class="btn btn-ghost" id="tpl-new-btn">＋ 新規テンプレート</button>
+        <div id="tpl-form" class="tpl-form" hidden>
+          <label class="field">
+            <span>名前</span>
+            <input type="text" id="tpl-f-name" placeholder="例: 白米(ごはん)">
+          </label>
+          <div class="tpl-mode-toggle" role="radiogroup" aria-label="栄養値の基準">
+            <button class="tpl-mode-btn active" data-tplmode="per100g" role="radio" aria-checked="true">100gあたり</button>
+            <button class="tpl-mode-btn" data-tplmode="unit" role="radio" aria-checked="false">1単位あたり</button>
+          </div>
+          <div class="item-nutrients tpl-f-nutrients">
+            <label>kcal<input type="number" id="tpl-f-kcal" min="0" step="1"></label>
+            <label>P(g)<input type="number" id="tpl-f-protein" min="0" step="0.1"></label>
+            <label>F(g)<input type="number" id="tpl-f-fat" min="0" step="0.1"></label>
+            <label>C(g)<input type="number" id="tpl-f-carbs" min="0" step="0.1"></label>
+          </div>
+          <label class="field tpl-f-per100g">
+            <span>増減の刻み幅 (g)</span>
+            <input type="number" id="tpl-f-step" value="50" min="5" step="5">
+          </label>
+          <label class="field tpl-f-unit" hidden>
+            <span>単位 (個/杯/枚など)</span>
+            <input type="text" id="tpl-f-unitlabel" value="個">
+          </label>
+          <label class="field">
+            <span>既定の量 (g / 個数)</span>
+            <input type="number" id="tpl-f-defaultqty" min="0">
+          </label>
+          <div class="editor-actions">
+            <button class="btn btn-ghost" id="tpl-form-cancel">キャンセル</button>
+            <button class="btn btn-primary" id="tpl-form-save">保存</button>
+          </div>
+        </div>
       </details>
 
       <button class="btn btn-primary" id="save-settings-btn">設定を保存</button>

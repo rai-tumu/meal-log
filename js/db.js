@@ -1,7 +1,8 @@
-// IndexedDB ラッパー — 食事記録の永続化(端末ローカル)
+// IndexedDB ラッパー — 食事記録・テンプレートの永続化(端末ローカル)
 const DB_NAME = 'meallog';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const STORE = 'meals';
+const TPL_STORE = 'templates';
 
 let dbPromise = null;
 
@@ -15,6 +16,9 @@ function openDB() {
         const store = db.createObjectStore(STORE, { keyPath: 'id' });
         store.createIndex('date', 'date');
       }
+      if (!db.objectStoreNames.contains(TPL_STORE)) {
+        db.createObjectStore(TPL_STORE, { keyPath: 'id' });
+      }
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
@@ -22,8 +26,8 @@ function openDB() {
   return dbPromise;
 }
 
-function tx(db, mode) {
-  return db.transaction(STORE, mode).objectStore(STORE);
+function tx(db, mode, store = STORE) {
+  return db.transaction(store, mode).objectStore(store);
 }
 
 function reqToPromise(req) {
@@ -76,6 +80,41 @@ export async function getMealsByRange(from, to) {
 export async function getMealsByMonthRaw(ym) {
   const all = await getAllMealsRaw();
   return all.filter(m => m.date.startsWith(ym));
+}
+
+// ---------- テンプレート ----------
+
+export async function putTemplate(tpl) {
+  const db = await openDB();
+  return reqToPromise(tx(db, 'readwrite', TPL_STORE).put(tpl));
+}
+
+export async function getTemplate(id) {
+  const db = await openDB();
+  return reqToPromise(tx(db, 'readonly', TPL_STORE).get(id));
+}
+
+/** 全件(削除済み含む)— 同期・シード投入用 */
+export async function getAllTemplatesRaw() {
+  const db = await openDB();
+  return reqToPromise(tx(db, 'readonly', TPL_STORE).getAll());
+}
+
+/** 有効なテンプレートのみ、名前順 */
+export async function getAllTemplates() {
+  const all = await getAllTemplatesRaw();
+  return all
+    .filter(t => !t.deleted)
+    .sort((a, b) => a.name.localeCompare(b.name, 'ja'));
+}
+
+/** 削除はトゥームストーン方式(mealsと同じ・同期で他端末へ削除を伝播) */
+export async function markTemplateDeleted(id) {
+  const tpl = await getTemplate(id);
+  if (!tpl) return;
+  tpl.deleted = true;
+  tpl.updated_at = new Date().toISOString();
+  await putTemplate(tpl);
 }
 
 export function newId() {

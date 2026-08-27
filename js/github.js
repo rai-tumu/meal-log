@@ -1,6 +1,6 @@
 // GitHub REST API (contents) でプライベートリポジトリへ月別JSON/Markdownを同期
 // 方式: pull(リモート取得) → merge(idごとにupdated_atが新しい方を採用) → push
-import { getMealsByMonthRaw, putMeal } from './db.js';
+import { getMealsByMonthRaw, putMeal, getAllTemplatesRaw, putTemplate } from './db.js';
 import { toMarkdown, mealTotal } from './export.js';
 
 const API = 'https://api.github.com';
@@ -132,6 +132,59 @@ function normalizeJson(str) {
     delete obj.updated_at;
     return JSON.stringify(obj);
   } catch { return str; }
+}
+
+/**
+ * テンプレート(templates.json 単一ファイル)を同期。方式はsyncMonthと同じ
+ * pull → idごとにupdated_atの新しい方を採用 → 変化があればpush。
+ * @returns {Promise<{pulled: number, changed: boolean}>} pulled=取り込んだ新規件数, changed=リモートから何か更新されたか
+ */
+export async function syncTemplates(repo, token) {
+  const path = 'templates.json';
+
+  const remoteFile = await getFile(repo, token, path);
+  let remoteTpls = [];
+  if (remoteFile) {
+    try {
+      const parsed = JSON.parse(remoteFile.content);
+      remoteTpls = [...(parsed.templates || []), ...(parsed.tombstones || [])];
+    } catch { remoteTpls = []; }
+  }
+
+  const localTpls = await getAllTemplatesRaw();
+
+  const merged = new Map();
+  for (const t of remoteTpls) merged.set(t.id, t);
+  const localIds = new Set(localTpls.map(t => t.id));
+  for (const t of localTpls) {
+    const r = merged.get(t.id);
+    if (!r || (t.updated_at || '') >= (r.updated_at || '')) merged.set(t.id, t);
+  }
+
+  let pulled = 0;
+  let changed = false;
+  for (const [id, t] of merged) {
+    const local = localTpls.find(l => l.id === id);
+    if (!local || (t.updated_at || '') > (local.updated_at || '')) {
+      await putTemplate(t);
+      changed = true;
+      if (!localIds.has(id)) pulled++;
+    }
+  }
+
+  const all = [...merged.values()].sort((a, b) => a.name.localeCompare(b.name, 'ja'));
+  const jsonContent = JSON.stringify({
+    format: 'meallog-templates-v1',
+    updated_at: new Date().toISOString(),
+    templates: all.filter(t => !t.deleted),
+    tombstones: all.filter(t => t.deleted).map(t => ({ id: t.id, name: t.name, deleted: true, updated_at: t.updated_at })),
+  }, null, 2);
+
+  if (!remoteFile || normalizeJson(remoteFile.content) !== normalizeJson(jsonContent)) {
+    await putFile(repo, token, path, jsonContent, remoteFile?.sha, 'MealLog sync templates');
+  }
+
+  return { pulled, changed };
 }
 
 /** 複数月をまとめて同期 */

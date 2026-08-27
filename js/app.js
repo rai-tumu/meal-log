@@ -4,6 +4,7 @@ import * as gemini from './gemini.js';
 import * as github from './github.js';
 import { buildProfile, itemRanking } from './suggest.js';
 import { toMarkdown, toJSON, toCSV, download, mealTotal } from './export.js';
+import * as tpl from './templates.js';
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -46,7 +47,7 @@ function switchTab(view) {
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
   $(`#view-${view}`).classList.add('active');
   if (view === 'history') renderHistory();
-  if (view === 'record') renderTodaySummary();
+  if (view === 'record') { renderTodaySummary(); renderTemplateBar(); }
   if (view === 'suggest') renderTasteRanking();
 }
 
@@ -69,6 +70,7 @@ function renderItems(items) {
     row.className = 'item-row';
     row.innerHTML = `
       <input type="text" class="item-name" placeholder="品目名" value="">
+      <button class="item-save-tpl" title="テンプレートに登録">☆</button>
       <button class="item-remove" title="削除">✕</button>
       <div class="item-nutrients">
         <label>kcal<input type="number" class="item-kcal" min="0" step="1"></label>
@@ -84,6 +86,25 @@ function renderItems(items) {
     row.querySelector('.item-remove').addEventListener('click', () => {
       row.remove();
       updateEditorTotal();
+    });
+    // 入力中の品目を「1個あたり」テンプレとして保存(詳細は設定画面で調整可能)
+    row.querySelector('.item-save-tpl').addEventListener('click', async () => {
+      const name = row.querySelector('.item-name').value.trim();
+      if (!name) { toast('品目名を入力してください'); return; }
+      const now = new Date().toISOString();
+      await db.putTemplate({
+        id: db.newId(), name, mode: 'unit',
+        kcal: Math.round(Number(row.querySelector('.item-kcal').value) || 0),
+        protein: Number(row.querySelector('.item-protein').value) || 0,
+        fat: Number(row.querySelector('.item-fat').value) || 0,
+        carbs: Number(row.querySelector('.item-carbs').value) || 0,
+        unitLabel: '個', defaultQty: 1,
+        created_at: now, updated_at: now,
+      });
+      toast(`「${name}」をテンプレートに登録しました`);
+      renderTemplateBar();
+      renderTemplateManager();
+      queueTemplateSync();
     });
     row.querySelector('.item-kcal').addEventListener('input', updateEditorTotal);
     list.appendChild(row);
@@ -170,6 +191,73 @@ $('#save-meal-btn').addEventListener('click', async () => {
 
 $('#manual-entry-btn').addEventListener('click', () => {
   openEditor({ items: [emptyItem()], title: '手動入力' });
+});
+
+// ---------- 記録画面: テンプレート ----------
+let pickerTpl = null;
+let pickerQty = 0;
+
+async function renderTemplateBar() {
+  const bar = $('#template-bar');
+  const templates = await db.getAllTemplates();
+  bar.innerHTML = '';
+  document.querySelector('.template-section').hidden = templates.length === 0;
+  for (const t of templates) {
+    const chip = document.createElement('button');
+    chip.className = 'tpl-chip';
+    chip.textContent = t.name;
+    chip.addEventListener('click', () => openTplPicker(t, chip));
+    bar.appendChild(chip);
+  }
+}
+
+function openTplPicker(t, chip) {
+  pickerTpl = t;
+  pickerQty = t.defaultQty || (t.mode === 'per100g' ? (t.step || 50) : 1);
+  document.querySelectorAll('.tpl-chip').forEach(c => c.classList.toggle('active', c === chip));
+  $('#tpl-picker-name').textContent = t.name;
+  $('#tpl-picker').hidden = false;
+  renderTplPicker();
+}
+
+function closeTplPicker() {
+  pickerTpl = null;
+  $('#tpl-picker').hidden = true;
+  document.querySelectorAll('.tpl-chip').forEach(c => c.classList.remove('active'));
+}
+
+function renderTplPicker() {
+  if (!pickerTpl) return;
+  $('#tpl-qty-display').textContent = tpl.qtyLabel(pickerTpl, pickerQty);
+  const item = tpl.templateToItem(pickerTpl, pickerQty);
+  $('#tpl-picker-preview').textContent =
+    `${item.kcal} kcal / P ${item.protein} F ${item.fat} C ${item.carbs}`;
+}
+
+function stepTplQty(dir) {
+  if (!pickerTpl) return;
+  const step = pickerTpl.mode === 'per100g' ? (pickerTpl.step || 50) : 1;
+  const min = pickerTpl.mode === 'per100g' ? (pickerTpl.step || 50) : 1;
+  pickerQty = Math.max(min, pickerQty + dir * step);
+  renderTplPicker();
+}
+
+$('#tpl-qty-minus').addEventListener('click', () => stepTplQty(-1));
+$('#tpl-qty-plus').addEventListener('click', () => stepTplQty(1));
+$('#tpl-cancel-btn').addEventListener('click', closeTplPicker);
+
+$('#tpl-add-btn').addEventListener('click', () => {
+  if (!pickerTpl) return;
+  const item = tpl.templateToItem(pickerTpl, pickerQty);
+  if ($('#meal-editor').hidden) {
+    openEditor({ items: [item], source: 'template', title: 'テンプレートから記録' });
+  } else {
+    // エディタが開いていれば追記(複数テンプレを1食にまとめられる)
+    const items = readItemsFromEditorLoose().filter(it => it.name || it.kcal);
+    renderItems([...items, item]);
+  }
+  closeTplPicker();
+  toast(`${item.name} を追加しました`);
 });
 
 // ---------- 記録画面: 写真・テキスト解析 ----------
@@ -331,6 +419,7 @@ function sourceIcon(source) {
   if (source === 'photo') return ' 📷';
   if (source === 'text') return ' 💬';
   if (source === 'suggest') return ' 💡';
+  if (source === 'template') return ' 📌';
   return '';
 }
 
@@ -556,6 +645,13 @@ function queueSync(ym) {
   runSync();
 }
 
+const TPL_PENDING_KEY = 'meallog-pending-tpl-sync';
+
+function queueTemplateSync() {
+  localStorage.setItem(TPL_PENDING_KEY, '1');
+  runSync();
+}
+
 async function runSync() {
   if (syncing) return;
   if (!settings.githubRepo || !settings.githubToken) return;
@@ -572,6 +668,9 @@ async function runSync() {
   try {
     const { pulled } = await github.syncMonths(settings.githubRepo, settings.githubToken, targets);
     setPendingMonths([]);
+    // テンプレートも毎回同期(変更がなければno-opガードでpushされない)
+    const tplResult = await github.syncTemplates(settings.githubRepo, settings.githubToken);
+    localStorage.removeItem(TPL_PENDING_KEY);
     settings.lastSync = new Date().toISOString();
     saveSettings(settings);
     indicator.textContent = '✅ 同期済み';
@@ -580,6 +679,11 @@ async function runSync() {
     if (pulled > 0) {
       toast(`他の端末から ${pulled} 件の記録を取り込みました`);
       renderTodaySummary();
+    }
+    if (tplResult.changed) {
+      renderTemplateBar();
+      renderTemplateManager();
+      if (tplResult.pulled > 0) toast(`テンプレート ${tplResult.pulled} 件を取り込みました`);
     }
   } catch (e) {
     indicator.textContent = '⚠️ 同期失敗';
@@ -599,7 +703,108 @@ function initSettingsView() {
   $('#setting-github-token').value = settings.githubToken || '';
   $('#setting-target-kcal').value = settings.targetKcal || '';
   updateLastSyncInfo();
+  renderTemplateManager();
 }
+
+// ---------- 設定画面: テンプレート管理 ----------
+let tplFormEditing = null; // 編集中の既存テンプレート(新規時はnull)
+let tplFormMode = 'per100g';
+
+async function renderTemplateManager() {
+  const list = $('#template-manager-list');
+  const templates = await db.getAllTemplates();
+  list.innerHTML = '';
+  for (const t of templates) {
+    const row = document.createElement('div');
+    row.className = 'tpl-row';
+    row.innerHTML = `
+      <div class="tpl-row-main">
+        <div class="tpl-row-name"></div>
+        <div class="tpl-row-sub"></div>
+      </div>
+      <button class="tpl-row-edit" title="編集">✎</button>
+      <button class="tpl-row-delete" title="削除">🗑</button>`;
+    row.querySelector('.tpl-row-name').textContent = t.name;
+    const stepInfo = t.mode === 'per100g' ? `・${t.step || 50}g刻み` : '';
+    row.querySelector('.tpl-row-sub').textContent =
+      `${tpl.basisLabel(t)} ${t.kcal}kcal / P ${t.protein} F ${t.fat} C ${t.carbs}${stepInfo}`;
+    row.querySelector('.tpl-row-edit').addEventListener('click', () => openTplForm(t));
+    row.querySelector('.tpl-row-delete').addEventListener('click', async () => {
+      if (!confirm(`「${t.name}」を削除しますか?`)) return;
+      await db.markTemplateDeleted(t.id);
+      toast('テンプレートを削除しました');
+      renderTemplateManager();
+      renderTemplateBar();
+      queueTemplateSync();
+    });
+    list.appendChild(row);
+  }
+}
+
+function setTplFormMode(mode) {
+  tplFormMode = mode;
+  document.querySelectorAll('.tpl-mode-btn').forEach(b => {
+    const on = b.dataset.tplmode === mode;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-checked', String(on));
+  });
+  document.querySelector('.tpl-f-per100g').hidden = mode !== 'per100g';
+  document.querySelector('.tpl-f-unit').hidden = mode !== 'unit';
+}
+
+document.querySelectorAll('.tpl-mode-btn').forEach(btn => {
+  btn.addEventListener('click', () => setTplFormMode(btn.dataset.tplmode));
+});
+
+function openTplForm(existing = null) {
+  tplFormEditing = existing;
+  $('#tpl-f-name').value = existing?.name || '';
+  $('#tpl-f-kcal').value = existing?.kcal ?? '';
+  $('#tpl-f-protein').value = existing?.protein ?? '';
+  $('#tpl-f-fat').value = existing?.fat ?? '';
+  $('#tpl-f-carbs').value = existing?.carbs ?? '';
+  $('#tpl-f-step').value = existing?.step || 50;
+  $('#tpl-f-unitlabel').value = existing?.unitLabel || '個';
+  $('#tpl-f-defaultqty').value = existing?.defaultQty ?? '';
+  setTplFormMode(existing?.mode || 'per100g');
+  $('#tpl-form').hidden = false;
+}
+
+$('#tpl-new-btn').addEventListener('click', () => openTplForm());
+$('#tpl-form-cancel').addEventListener('click', () => { $('#tpl-form').hidden = true; });
+
+$('#tpl-form-save').addEventListener('click', async () => {
+  const name = $('#tpl-f-name').value.trim();
+  const kcal = Math.round(Number($('#tpl-f-kcal').value) || 0);
+  if (!name) { toast('名前を入力してください'); return; }
+  if (kcal < 0) { toast('kcalは0以上で入力してください'); return; }
+  const now = new Date().toISOString();
+  const record = {
+    id: tplFormEditing?.id || db.newId(),
+    name,
+    mode: tplFormMode,
+    kcal,
+    protein: Number($('#tpl-f-protein').value) || 0,
+    fat: Number($('#tpl-f-fat').value) || 0,
+    carbs: Number($('#tpl-f-carbs').value) || 0,
+    created_at: tplFormEditing?.created_at || now,
+    updated_at: now,
+  };
+  if (tplFormMode === 'per100g') {
+    record.step = Number($('#tpl-f-step').value) || 50;
+    record.defaultQty = Number($('#tpl-f-defaultqty').value) || record.step;
+  } else {
+    record.unitLabel = $('#tpl-f-unitlabel').value.trim() || '個';
+    record.defaultQty = Number($('#tpl-f-defaultqty').value) || 1;
+  }
+  await db.putTemplate(record);
+  $('#tpl-form').hidden = true;
+  tplFormEditing = null;
+  toast('テンプレートを保存しました');
+  renderTemplateManager();
+  renderTemplateBar();
+  queueTemplateSync();
+});
 
 function updateLastSyncInfo() {
   const el = $('#last-sync-info');
@@ -666,7 +871,11 @@ $('#sync-now-btn').addEventListener('click', async () => {
 initExportView();
 initSettingsView();
 renderTodaySummary();
-runSync();
+// シード投入(冪等)→テンプレ表示→同期の順。失敗しても同期は行う
+tpl.ensureSeeds()
+  .then(renderTemplateBar)
+  .catch(e => console.warn('seed failed:', e))
+  .finally(runSync);
 
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('sw.js').catch(() => {});
