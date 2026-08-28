@@ -5,6 +5,7 @@ import * as github from './github.js';
 import { buildProfile, itemRanking } from './suggest.js';
 import { toMarkdown, toJSON, toCSV, download, mealTotal } from './export.js';
 import * as tpl from './templates.js';
+import { CATEGORIES } from './templates-seed.js';
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -47,7 +48,7 @@ function switchTab(view) {
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
   $(`#view-${view}`).classList.add('active');
   if (view === 'history') renderHistory();
-  if (view === 'record') { renderTodaySummary(); renderTemplateBar(); }
+  if (view === 'record') { renderTodaySummary(); renderTemplateList(); }
   if (view === 'suggest') renderTasteRanking();
   if (view === 'settings') renderTemplateManager();
 }
@@ -94,16 +95,16 @@ function renderItems(items) {
       if (!name) { toast('品目名を入力してください'); return; }
       const now = new Date().toISOString();
       await db.putTemplate({
-        id: db.newId(), name, mode: 'unit',
+        id: db.newId(), name, category: 'other', mode: 'unit',
         kcal: Math.round(Number(row.querySelector('.item-kcal').value) || 0),
         protein: Number(row.querySelector('.item-protein').value) || 0,
         fat: Number(row.querySelector('.item-fat').value) || 0,
         carbs: Number(row.querySelector('.item-carbs').value) || 0,
-        unitLabel: '個', defaultQty: 1,
+        unitLabel: '個', step: 1, defaultQty: 1,
         created_at: now, updated_at: now,
       });
       toast(`「${name}」をテンプレートに登録しました`);
-      renderTemplateBar();
+      renderTemplateList();
       renderTemplateManager();
       queueTemplateSync();
     });
@@ -213,22 +214,43 @@ function bumpTplUsage(id) {
   localStorage.setItem(TPL_USAGE_KEY, JSON.stringify(usage));
 }
 
-async function renderTemplateBar() {
-  const bar = $('#template-bar');
+/** ピッカーは行の直下へ移動させて使うため、リスト再描画の前にセクション直下へ戻す */
+function detachTplPicker() {
+  const picker = $('#tpl-picker');
+  if (picker.parentElement !== $('#template-section')) $('#template-section').appendChild(picker);
+}
+
+async function renderTemplateList() {
+  const list = $('#template-list');
   const section = $('#template-section');
   const templates = await db.getAllTemplates();
   const usage = getTplUsage();
-  // よく使う順 → 名前順
+  // カテゴリ順 → よく使う順 → 名前順
   templates.sort((a, b) =>
-    (usage[b.id] || 0) - (usage[a.id] || 0) || a.name.localeCompare(b.name, 'ja'));
+    tpl.categoryOrder(a) - tpl.categoryOrder(b) ||
+    (usage[b.id] || 0) - (usage[a.id] || 0) ||
+    a.name.localeCompare(b.name, 'ja'));
 
-  bar.innerHTML = '';
+  closeTplPicker();
+  detachTplPicker();
+  list.innerHTML = '';
+  let lastCat = null;
   for (const t of templates) {
-    const chip = document.createElement('button');
-    chip.className = 'tpl-chip';
-    chip.textContent = t.name;
-    chip.addEventListener('click', () => openTplPicker(t, chip));
-    bar.appendChild(chip);
+    const cat = t.category || 'other';
+    if (cat !== lastCat) {
+      const head = document.createElement('div');
+      head.className = 'tpl-cat';
+      head.textContent = CATEGORIES.find(c => c.key === cat)?.label || 'その他';
+      list.appendChild(head);
+      lastCat = cat;
+    }
+    const row = document.createElement('button');
+    row.className = 'tpl-item';
+    row.innerHTML = '<span class="tpl-item-name"></span><span class="tpl-item-basis"></span>';
+    row.querySelector('.tpl-item-name').textContent = t.name;
+    row.querySelector('.tpl-item-basis').textContent = tpl.basisSummary(t);
+    row.addEventListener('click', () => openTplPicker(t, row));
+    list.appendChild(row);
   }
   section.open = localStorage.getItem(TPL_OPEN_KEY) === '1';
   section.hidden = templates.length === 0;
@@ -238,11 +260,13 @@ $('#template-section').addEventListener('toggle', (e) => {
   localStorage.setItem(TPL_OPEN_KEY, e.target.open ? '1' : '0');
 });
 
-function openTplPicker(t, chip) {
+function openTplPicker(t, row) {
   pickerTpl = t;
-  pickerQty = t.defaultQty || (t.mode === 'per100g' ? (t.step || 50) : 1);
-  document.querySelectorAll('.tpl-chip').forEach(c => c.classList.toggle('active', c === chip));
+  pickerQty = t.defaultQty || tpl.qtyStep(t);
+  document.querySelectorAll('.tpl-item').forEach(r => r.classList.toggle('active', r === row));
   $('#tpl-picker-name').textContent = t.name;
+  // 選んだ行の直下に分量ピッカーを開く
+  row.insertAdjacentElement('afterend', $('#tpl-picker'));
   $('#tpl-picker').hidden = false;
   renderTplPicker();
 }
@@ -250,7 +274,7 @@ function openTplPicker(t, chip) {
 function closeTplPicker() {
   pickerTpl = null;
   $('#tpl-picker').hidden = true;
-  document.querySelectorAll('.tpl-chip').forEach(c => c.classList.remove('active'));
+  document.querySelectorAll('.tpl-item').forEach(r => r.classList.remove('active'));
 }
 
 function renderTplPicker() {
@@ -263,9 +287,9 @@ function renderTplPicker() {
 
 function stepTplQty(dir) {
   if (!pickerTpl) return;
-  const step = pickerTpl.mode === 'per100g' ? (pickerTpl.step || 50) : 1;
-  const min = pickerTpl.mode === 'per100g' ? (pickerTpl.step || 50) : 1;
-  pickerQty = Math.max(min, pickerQty + dir * step);
+  const step = tpl.qtyStep(pickerTpl);
+  // 0.5刻みなどの小数で誤差が出ないよう丸めてから比較する
+  pickerQty = Math.max(step, tpl.round1(pickerQty + dir * step));
   renderTplPicker();
 }
 
@@ -709,7 +733,7 @@ async function runSync() {
       renderTodaySummary();
     }
     if (tplResult.changed) {
-      renderTemplateBar();
+      renderTemplateList();
       renderTemplateManager();
       if (tplResult.pulled > 0) toast(`テンプレート ${tplResult.pulled} 件を取り込みました`);
     }
@@ -741,6 +765,8 @@ let tplFormMode = 'per100g';
 async function renderTemplateManager() {
   const list = $('#template-manager-list');
   const templates = await db.getAllTemplates();
+  templates.sort((a, b) =>
+    tpl.categoryOrder(a) - tpl.categoryOrder(b) || a.name.localeCompare(b.name, 'ja'));
   list.innerHTML = '';
   for (const t of templates) {
     const row = document.createElement('div');
@@ -752,17 +778,19 @@ async function renderTemplateManager() {
       </div>
       <button class="tpl-row-edit" title="編集">✎</button>
       <button class="tpl-row-delete" title="削除">🗑</button>`;
-    row.querySelector('.tpl-row-name').textContent = t.name;
-    const stepInfo = t.mode === 'per100g' ? `・${t.step || 50}g刻み` : '';
+    const catLabel = CATEGORIES.find(c => c.key === (t.category || 'other'))?.label || 'その他';
+    row.querySelector('.tpl-row-name').textContent = `${catLabel} / ${t.name}`;
+    const unit = t.mode === 'per100g' ? 'g' : (t.unitLabel || '個');
     row.querySelector('.tpl-row-sub').textContent =
-      `${tpl.basisLabel(t)} ${t.kcal}kcal / P ${t.protein} F ${t.fat} C ${t.carbs}${stepInfo}`;
+      `${tpl.basisLabel(t)} ${t.kcal}kcal / P ${t.protein} F ${t.fat} C ${t.carbs}` +
+      `・${tpl.qtyStep(t)}${unit}刻み`;
     row.querySelector('.tpl-row-edit').addEventListener('click', () => openTplForm(t));
     row.querySelector('.tpl-row-delete').addEventListener('click', async () => {
       if (!confirm(`「${t.name}」を削除しますか?`)) return;
       await db.markTemplateDeleted(t.id);
       toast('テンプレートを削除しました');
       renderTemplateManager();
-      renderTemplateBar();
+      renderTemplateList();
       queueTemplateSync();
     });
     list.appendChild(row);
@@ -776,8 +804,8 @@ function setTplFormMode(mode) {
     b.classList.toggle('active', on);
     b.setAttribute('aria-checked', String(on));
   });
-  document.querySelector('.tpl-f-per100g').hidden = mode !== 'per100g';
-  document.querySelector('.tpl-f-unit').hidden = mode !== 'unit';
+  document.querySelectorAll('.tpl-f-per100g').forEach(el => { el.hidden = mode !== 'per100g'; });
+  document.querySelectorAll('.tpl-f-unit').forEach(el => { el.hidden = mode !== 'unit'; });
 }
 
 document.querySelectorAll('.tpl-mode-btn').forEach(btn => {
@@ -791,8 +819,10 @@ function openTplForm(existing = null) {
   $('#tpl-f-protein').value = existing?.protein ?? '';
   $('#tpl-f-fat').value = existing?.fat ?? '';
   $('#tpl-f-carbs').value = existing?.carbs ?? '';
-  $('#tpl-f-step').value = existing?.step || 50;
+  $('#tpl-f-category').value = existing?.category || 'other';
+  $('#tpl-f-step').value = existing?.mode === 'per100g' ? (existing.step || 50) : 50;
   $('#tpl-f-unitlabel').value = existing?.unitLabel || '個';
+  $('#tpl-f-unitstep').value = existing?.mode === 'unit' ? (existing.step || 1) : 1;
   $('#tpl-f-defaultqty').value = existing?.defaultQty ?? '';
   setTplFormMode(existing?.mode || 'per100g');
   $('#tpl-form').hidden = false;
@@ -810,6 +840,7 @@ $('#tpl-form-save').addEventListener('click', async () => {
   const record = {
     id: tplFormEditing?.id || db.newId(),
     name,
+    category: $('#tpl-f-category').value || 'other',
     mode: tplFormMode,
     kcal,
     protein: Number($('#tpl-f-protein').value) || 0,
@@ -823,14 +854,15 @@ $('#tpl-form-save').addEventListener('click', async () => {
     record.defaultQty = Number($('#tpl-f-defaultqty').value) || record.step;
   } else {
     record.unitLabel = $('#tpl-f-unitlabel').value.trim() || '個';
-    record.defaultQty = Number($('#tpl-f-defaultqty').value) || 1;
+    record.step = Number($('#tpl-f-unitstep').value) || 1;
+    record.defaultQty = Number($('#tpl-f-defaultqty').value) || record.step;
   }
   await db.putTemplate(record);
   $('#tpl-form').hidden = true;
   tplFormEditing = null;
   toast('テンプレートを保存しました');
   renderTemplateManager();
-  renderTemplateBar();
+  renderTemplateList();
   queueTemplateSync();
 });
 
@@ -901,7 +933,7 @@ initSettingsView();
 renderTodaySummary();
 // シード投入(冪等)→テンプレ表示→同期の順。失敗しても同期は行う
 tpl.ensureSeeds()
-  .then(renderTemplateBar)
+  .then(renderTemplateList)
   .catch(e => console.warn('seed failed:', e))
   .finally(runSync);
 

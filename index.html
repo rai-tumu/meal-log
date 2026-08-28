@@ -44,7 +44,7 @@
       <!-- テンプレートから記録(描画完了までは hidden。JSが古い場合に見出しだけ残るのを防ぐ) -->
       <details class="template-section" id="template-section" hidden>
         <summary>🍚 テンプレート</summary>
-        <div id="template-bar" class="template-bar"></div>
+        <div id="template-list" class="template-list"></div>
         <div id="tpl-picker" class="tpl-picker" hidden>
           <div id="tpl-picker-name" class="tpl-picker-name"></div>
           <div class="tpl-stepper">
@@ -177,6 +177,15 @@
             <span>名前</span>
             <input type="text" id="tpl-f-name" placeholder="例: 白米(ごはん)">
           </label>
+          <label class="field">
+            <span>分類</span>
+            <select id="tpl-f-category">
+              <option value="rice">米</option>
+              <option value="fruit">果物</option>
+              <option value="egg">卵</option>
+              <option value="other" selected>その他</option>
+            </select>
+          </label>
           <div class="tpl-mode-toggle" role="radiogroup" aria-label="栄養値の基準">
             <button class="tpl-mode-btn active" data-tplmode="per100g" role="radio" aria-checked="true">100gあたり</button>
             <button class="tpl-mode-btn" data-tplmode="unit" role="radio" aria-checked="false">1単位あたり</button>
@@ -194,6 +203,10 @@
           <label class="field tpl-f-unit" hidden>
             <span>単位 (個/杯/枚など)</span>
             <input type="text" id="tpl-f-unitlabel" value="個">
+          </label>
+          <label class="field tpl-f-unit" hidden>
+            <span>増減の刻み幅 (個数)</span>
+            <input type="number" id="tpl-f-unitstep" value="1" min="0.1" step="0.1">
           </label>
           <label class="field">
             <span>既定の量 (g / 個数)</span>
