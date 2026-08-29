@@ -194,22 +194,106 @@ main { padding: 16px; max-width: 560px; margin: 0 auto; }
   color: var(--text);
 }
 .editor-total { text-align: right; margin-bottom: 10px; font-size: 1.05rem; }
+.editor-total .editor-total-pfc {
+  display: block;
+  font-size: 0.8rem;
+  color: var(--text-sub);
+  margin-top: 2px;
+}
 .editor-actions { display: flex; gap: 10px; }
 .editor-actions .btn { flex: 1; }
 
 #manual-entry-btn { width: 100%; margin-bottom: 16px; }
 
-.today-summary {
+/* ---- カロリー/PFC サマリーカード(記録画面・履歴画面で共用) ---- */
+.nutrition-card {
   background: var(--card);
   border: 1.5px solid var(--border);
   border-radius: 14px;
   padding: 14px;
-  font-size: 0.95rem;
+  margin-bottom: 14px;
 }
-.today-summary .big { font-size: 1.6rem; font-weight: 700; color: var(--primary); }
-.today-summary .over { color: var(--danger); }
+.nut-label { font-size: 0.9rem; font-weight: 700; }
+.nut-metric-main .nut-label { font-size: 1rem; }
+
+.nut-values {
+  display: flex;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: 2px;
+  white-space: nowrap;
+}
+.nut-value { font-size: 1.5rem; font-weight: 700; line-height: 1.2; }
+.nut-metric-main .nut-value { font-size: 2.4rem; }
+.nut-target { font-size: 0.95rem; color: var(--text-sub); }
+.nut-metric-main .nut-target { font-size: 1.2rem; }
+.nut-metric.over .nut-value { color: var(--danger); }
+
+.nut-bar {
+  height: 10px;
+  border-radius: 6px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  overflow: hidden;
+  margin-top: 6px;
+}
+.nut-bar > i {
+  display: block;
+  height: 100%;
+  border-radius: 6px;
+  background: var(--primary);
+  transition: width 0.25s ease;
+}
+.nut-bar > i.over { background: var(--danger); }
+
+.nut-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px 14px;
+  margin-top: 16px;
+}
+.nut-tile.wide { grid-column: 1 / -1; }
+
+.nut-foot {
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border);
+  font-size: 0.85rem;
+  color: var(--text-sub);
+}
+.nut-foot.over { color: var(--danger); }
 
 /* ---- history view ---- */
+.history-picker {
+  display: grid;
+  grid-template-columns: 48px 1fr 48px;
+  gap: 8px;
+  align-items: center;
+}
+.history-picker input[type="date"] {
+  width: 100%;
+  padding: 10px;
+  border: 1.5px solid var(--border);
+  border-radius: 12px;
+  font-size: 16px;
+  text-align: center;
+  background: var(--card);
+  color: var(--text);
+}
+.hist-step {
+  height: 44px;
+  border: 1.5px solid var(--border);
+  border-radius: 12px;
+  background: var(--card);
+  color: var(--primary);
+  font-size: 1.3rem;
+  font-weight: 700;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.hist-step:disabled { opacity: 0.35; pointer-events: none; }
+#hist-range-info { text-align: center; margin: 8px 0 12px; }
+
 .history-chart {
   background: var(--card);
   border: 1.5px solid var(--border);
@@ -218,6 +302,13 @@ main { padding: 16px; max-width: 560px; margin: 0 auto; }
   margin-bottom: 14px;
 }
 .history-chart svg { width: 100%; height: auto; display: block; }
+.history-chart .bar-hit { cursor: pointer; }
+
+.hist-date-label {
+  text-align: center;
+  margin: 14px 0 8px;
+  font-size: 1.05rem;
+}
 
 .day-group { margin-bottom: 16px; }
 .day-header {
@@ -405,6 +496,28 @@ main { padding: 16px; max-width: 560px; margin: 0 auto; }
 }
 .settings-group .btn { margin: 4px 6px 4px 0; }
 #save-settings-btn { width: 100%; margin-top: 4px; }
+.ratio-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin: 10px 0;
+}
+.ratio-row label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.75rem;
+  color: var(--text-sub);
+}
+.ratio-row input {
+  padding: 10px;
+  border: 1.5px solid var(--border);
+  border-radius: 10px;
+  font-size: 16px;
+  background: var(--bg);
+  color: var(--text);
+  width: 100%;
+}
 
 /* ---- tab bar ---- */
 .tab-bar {

@@ -3,9 +3,10 @@ import * as db from './db.js';
 import * as gemini from './gemini.js';
 import * as github from './github.js';
 import { buildProfile, itemRanking } from './suggest.js';
-import { toMarkdown, toJSON, toCSV, download, mealTotal } from './export.js';
+import { toMarkdown, toJSON, toCSV, download, mealTotal, sumNutrients } from './export.js';
 import * as tpl from './templates.js';
 import { CATEGORIES } from './templates-seed.js';
+import { renderNutritionCard, nutritionTargets, autoTargets, pfcRatio } from './nutrition.js';
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -47,7 +48,7 @@ function switchTab(view) {
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.view === view));
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
   $(`#view-${view}`).classList.add('active');
-  if (view === 'history') renderHistory();
+  if (view === 'history') { historyDate = todayStr(); renderHistory(); }
   if (view === 'record') { renderTodaySummary(); renderTemplateList(); }
   if (view === 'suggest') renderTasteRanking();
   if (view === 'settings') renderTemplateManager();
@@ -108,7 +109,7 @@ function renderItems(items) {
       renderTemplateManager();
       queueTemplateSync();
     });
-    row.querySelector('.item-kcal').addEventListener('input', updateEditorTotal);
+    row.querySelectorAll('.item-nutrients input').forEach(i => i.addEventListener('input', updateEditorTotal));
     list.appendChild(row);
   });
   updateEditorTotal();
@@ -125,9 +126,11 @@ function readItemsFromEditor() {
 }
 
 function updateEditorTotal() {
-  const total = [...document.querySelectorAll('#items-list .item-kcal')]
-    .reduce((s, el) => s + (Number(el.value) || 0), 0);
-  $('#editor-total-kcal').textContent = Math.round(total);
+  const t = sumNutrients([{ items: readItemsFromEditorLoose() }]);
+  $('#editor-total-kcal').textContent = t.kcal;
+  $('#editor-total-p').textContent = t.protein;
+  $('#editor-total-f').textContent = t.fat;
+  $('#editor-total-c').textContent = t.carbs;
 }
 
 function openEditor({ items, note = '', source = 'manual', title = '記録内容' }) {
@@ -395,77 +398,125 @@ async function analyzeText() {
 // ---------- 今日のサマリー ----------
 async function renderTodaySummary() {
   const meals = await db.getMealsByRange(todayStr(), todayStr());
-  const total = meals.reduce((s, m) => s + mealTotal(m), 0);
-  const target = Number(settings.targetKcal) || 0;
-  const el = $('#today-summary');
-  let html = `今日の合計: <span class="big">${total}</span> kcal(${meals.length}食)`;
-  if (target > 0) {
-    const diff = target - total;
-    html += diff >= 0
-      ? `<br>目標まで残り ${diff} kcal`
-      : `<br><span class="over">目標を ${-diff} kcal 超過</span>`;
-  }
-  el.innerHTML = html;
+  renderNutritionCard($('#today-summary'), {
+    totals: sumNutrients(meals),
+    targets: nutritionTargets(settings),
+    mealCount: meals.length,
+  });
 }
 
 // ---------- 履歴画面 ----------
+// 表示中の日付。既定は今日で、選べる範囲は端末に残っている記録から毎回算出する。
+let historyDate = todayStr();
+
+function shiftDate(dateStr, days) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const dt = new Date(y, m - 1, d);
+  dt.setDate(dt.getDate() + days);
+  return todayStr(dt);
+}
+
 async function renderHistory() {
   const meals = await db.getAllMeals();
-  renderChart(meals);
+  const nav = $('#history-nav');
+  const chart = $('#history-chart');
+  const dateLabel = $('#hist-date-label');
+  const summary = $('#history-summary');
+  const list = $('#history-meals');
 
-  const list = $('#history-list');
   if (meals.length === 0) {
+    nav.hidden = true;
+    chart.hidden = true;
+    dateLabel.hidden = true;
+    summary.hidden = true;
     list.innerHTML = '<p class="empty-message">まだ記録がありません。<br>「記録」タブから食事を記録してみましょう。</p>';
     return;
   }
+  nav.hidden = false;
+  chart.hidden = false;
+  dateLabel.hidden = false;
+  summary.hidden = false;
 
-  const byDate = new Map();
-  for (const m of meals) {
-    if (!byDate.has(m.date)) byDate.set(m.date, []);
-    byDate.get(m.date).push(m);
-  }
-  const dates = [...byDate.keys()].sort().reverse();
-  const target = Number(settings.targetKcal) || 0;
+  // 端末に残っている記録の範囲。古い記録が消えれば選べる範囲も自動的に狭まる
+  const dates = [...new Set(meals.map(m => m.date))].sort();
+  const min = dates[0];
+  const max = [dates[dates.length - 1], todayStr()].sort().pop();
+  if (historyDate < min) historyDate = min;
+  if (historyDate > max) historyDate = max;
+
+  const dateInput = $('#hist-date');
+  dateInput.min = min;
+  dateInput.max = max;
+  dateInput.value = historyDate;
+  $('#hist-range-info').textContent =
+    `この端末に残っている記録: ${formatDateJa(min, true)} 〜 ${formatDateJa(max, true)}`;
+
+  // 前後ボタンは「記録のある日 + 今日」を行き来する(記録の無い日で空振りしないように)
+  const stops = [...new Set([...dates, todayStr()])].filter(d => d >= min && d <= max).sort();
+  $('#hist-prev').disabled = !stops.some(d => d < historyDate);
+  $('#hist-next').disabled = !stops.some(d => d > historyDate);
+
+  renderChart(meals, historyDate);
+  dateLabel.textContent = formatDateJa(historyDate);
+
+  const dayMeals = meals.filter(m => m.date === historyDate);
+  renderNutritionCard(summary, {
+    totals: sumNutrients(dayMeals),
+    targets: nutritionTargets(settings),
+    mealCount: dayMeals.length,
+  });
 
   list.innerHTML = '';
-  for (const date of dates) {
-    const dayMeals = byDate.get(date);
-    const dayTotal = dayMeals.reduce((s, m) => s + mealTotal(m), 0);
-    const group = document.createElement('div');
-    group.className = 'day-group';
-    const over = target > 0 && dayTotal > target;
-    group.innerHTML = `
-      <div class="day-header">
-        <span>${formatDateJa(date)}</span>
-        <span class="day-total ${over ? 'over' : ''}">${dayTotal} kcal</span>
-      </div>`;
-    for (const meal of dayMeals.slice().reverse()) {
-      const card = document.createElement('div');
-      card.className = 'meal-card';
-      const itemsText = meal.items.map(it => `${it.name} ${it.kcal}kcal`).join(' / ');
-      card.innerHTML = `
-        <div class="meal-info">
-          <div class="meal-time">${meal.time}${sourceIcon(meal.source)}</div>
-          <div class="meal-items"></div>
-          ${meal.note ? '<div class="meal-note"></div>' : ''}
-        </div>
-        <div class="meal-kcal">${mealTotal(meal)} kcal</div>
-        <button class="meal-delete" title="削除">🗑</button>`;
-      card.querySelector('.meal-items').textContent = itemsText;
-      if (meal.note) card.querySelector('.meal-note').textContent = meal.note;
-      card.querySelector('.meal-delete').addEventListener('click', async () => {
-        if (!confirm(`${meal.time} の記録を削除しますか?`)) return;
-        await db.markDeleted(meal.id);
-        toast('削除しました');
-        renderHistory();
-        renderTodaySummary();
-        queueSync(meal.date.slice(0, 7));
-      });
-      group.appendChild(card);
-    }
-    list.appendChild(group);
+  if (dayMeals.length === 0) {
+    list.innerHTML = '<p class="empty-message">この日の記録はありません。</p>';
+    return;
+  }
+  for (const meal of dayMeals.slice().reverse()) {
+    const card = document.createElement('div');
+    card.className = 'meal-card';
+    const itemsText = meal.items.map(it => `${it.name} ${it.kcal}kcal`).join(' / ');
+    card.innerHTML = `
+      <div class="meal-info">
+        <div class="meal-time">${meal.time}${sourceIcon(meal.source)}</div>
+        <div class="meal-items"></div>
+        ${meal.note ? '<div class="meal-note"></div>' : ''}
+      </div>
+      <div class="meal-kcal">${mealTotal(meal)} kcal</div>
+      <button class="meal-delete" title="削除">🗑</button>`;
+    card.querySelector('.meal-items').textContent = itemsText;
+    if (meal.note) card.querySelector('.meal-note').textContent = meal.note;
+    card.querySelector('.meal-delete').addEventListener('click', async () => {
+      if (!confirm(`${meal.time} の記録を削除しますか?`)) return;
+      await db.markDeleted(meal.id);
+      toast('削除しました');
+      renderHistory();
+      renderTodaySummary();
+      queueSync(meal.date.slice(0, 7));
+    });
+    list.appendChild(card);
   }
 }
+
+function goToDate(date) {
+  historyDate = date;
+  renderHistory();
+}
+
+$('#hist-date').addEventListener('change', (e) => {
+  if (e.target.value) goToDate(e.target.value);
+});
+
+// 前後ボタンは記録のある日へジャンプする。境界はrenderHistoryがdisabledで制御
+$('#hist-prev').addEventListener('click', async () => {
+  const dates = [...new Set((await db.getAllMeals()).map(m => m.date))].sort();
+  const prev = dates.filter(d => d < historyDate).pop();
+  if (prev) goToDate(prev);
+});
+$('#hist-next').addEventListener('click', async () => {
+  const stops = [...new Set([...(await db.getAllMeals()).map(m => m.date), todayStr()])].sort();
+  const next = stops.find(d => d > historyDate);
+  if (next) goToDate(next);
+});
 
 function sourceIcon(source) {
   if (source === 'photo') return ' 📷';
@@ -475,23 +526,19 @@ function sourceIcon(source) {
   return '';
 }
 
-function formatDateJa(dateStr) {
+function formatDateJa(dateStr, withYear = false) {
   const [y, m, d] = dateStr.split('-').map(Number);
   const week = ['日', '月', '火', '水', '木', '金', '土'][new Date(y, m - 1, d).getDay()];
-  const today = todayStr();
-  const label = dateStr === today ? ' (今日)' : '';
-  return `${m}/${d} (${week})${label}`;
+  // 年付き(範囲表示)では「(今日)」は付けない — 括弧が二重になって読みにくいため
+  const label = !withYear && dateStr === todayStr() ? ' (今日)' : '';
+  const head = withYear ? `${y}/${m}/${d}` : `${m}/${d}`;
+  return `${head} (${week})${label}`;
 }
 
-// 直近14日のカロリー棒グラフ(SVG)
-function renderChart(meals) {
+// endDate を右端とする14日分のカロリー棒グラフ(SVG)。棒をタップでその日へ移動
+function renderChart(meals, endDate = todayStr()) {
   const days = [];
-  const now = new Date();
-  for (let i = 13; i >= 0; i--) {
-    const d = new Date(now);
-    d.setDate(d.getDate() - i);
-    days.push(todayStr(d));
-  }
+  for (let i = 13; i >= 0; i--) days.push(shiftDate(endDate, -i));
   const totals = days.map(date =>
     meals.filter(m => m.date === date).reduce((s, m) => s + mealTotal(m), 0));
 
@@ -506,12 +553,18 @@ function renderChart(meals) {
     const x = pad + i * barW;
     const y = H - bottom - h;
     const over = target > 0 && v > target;
-    bars += `<rect x="${x + 2}" y="${y}" width="${barW - 4}" height="${h}" rx="3" fill="${over ? '#c0392b' : '#1a936f'}" opacity="0.85"/>`;
+    const selected = days[i] === endDate;
+    if (selected) {
+      bars += `<rect x="${x}" y="0" width="${barW}" height="${H}" rx="4" fill="currentColor" opacity="0.08"/>`;
+    }
+    bars += `<rect x="${x + 2}" y="${y}" width="${barW - 4}" height="${h}" rx="3" fill="${over ? '#c0392b' : '#1a936f'}" opacity="${selected ? 1 : 0.55}"/>`;
     if (v > 0) {
       bars += `<text x="${x + barW / 2}" y="${y - 3}" text-anchor="middle" font-size="9" fill="currentColor" opacity="0.7">${v}</text>`;
     }
     const day = days[i].slice(8);
-    bars += `<text x="${x + barW / 2}" y="${H - 6}" text-anchor="middle" font-size="9" fill="currentColor" opacity="0.6">${Number(day)}</text>`;
+    bars += `<text x="${x + barW / 2}" y="${H - 6}" text-anchor="middle" font-size="9" fill="currentColor" opacity="${selected ? 1 : 0.6}" font-weight="${selected ? 700 : 400}">${Number(day)}</text>`;
+    // タップ領域(棒が低い日でも押せるように列全体を覆う)
+    bars += `<rect class="bar-hit" data-date="${days[i]}" x="${x}" y="0" width="${barW}" height="${H}" fill="transparent"><title>${days[i]}</title></rect>`;
   });
 
   let targetLine = '';
@@ -521,8 +574,12 @@ function renderChart(meals) {
       <text x="${W - pad}" y="${ty - 4}" text-anchor="end" font-size="9" fill="#e67e22">目標 ${target}</text>`;
   }
 
-  $('#history-chart').innerHTML =
-    `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="直近14日間のカロリーグラフ">${bars}${targetLine}</svg>`;
+  const chart = $('#history-chart');
+  chart.innerHTML =
+    `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${endDate} までの14日間のカロリーグラフ">${bars}${targetLine}</svg>`;
+  chart.querySelectorAll('.bar-hit').forEach(hit => {
+    hit.addEventListener('click', () => goToDate(hit.dataset.date));
+  });
 }
 
 // ---------- 提案画面 ----------
@@ -754,9 +811,51 @@ function initSettingsView() {
   $('#setting-github-repo').value = settings.githubRepo || '';
   $('#setting-github-token').value = settings.githubToken || '';
   $('#setting-target-kcal').value = settings.targetKcal || '';
+  const r = pfcRatio(settings);
+  $('#setting-ratio-p').value = r.p;
+  $('#setting-ratio-f').value = r.f;
+  $('#setting-ratio-c').value = r.c;
+  $('#setting-target-protein').value = settings.targetProtein || '';
+  $('#setting-target-fat').value = settings.targetFat || '';
+  $('#setting-target-carbs').value = settings.targetCarbs || '';
+  updateTargetPreview();
   updateLastSyncInfo();
   renderTemplateManager();
 }
+
+/** 入力中の値から目標gを試算して表示する(保存前でも結果が見えるように) */
+function readTargetInputs() {
+  return {
+    targetKcal: Number($('#setting-target-kcal').value) || 0,
+    pfcRatio: {
+      p: $('#setting-ratio-p').value,
+      f: $('#setting-ratio-f').value,
+      c: $('#setting-ratio-c').value,
+    },
+  };
+}
+
+function updateTargetPreview() {
+  const draft = readTargetInputs();
+  const auto = autoTargets(draft);
+  const preview = $('#target-preview');
+  preview.textContent = auto.kcal > 0
+    ? `自動計算: P ${auto.protein}g / F ${auto.fat}g / C ${auto.carbs}g`
+    : '目標カロリーを入力すると、PFCの目標gを自動計算します。';
+  // placeholder に自動計算値を出し、空欄のままでも何が使われるか分かるようにする
+  $('#setting-target-protein').placeholder = auto.kcal > 0 ? String(auto.protein) : '';
+  $('#setting-target-fat').placeholder = auto.kcal > 0 ? String(auto.fat) : '';
+  $('#setting-target-carbs').placeholder = auto.kcal > 0 ? String(auto.carbs) : '';
+
+  const r = pfcRatio(draft);
+  const sum = r.p + r.f + r.c;
+  const warn = $('#ratio-warning');
+  warn.hidden = sum === 100;
+  warn.textContent = `⚠️ 比率の合計が ${sum}% です(通常は100%)。このまま保存もできます。`;
+}
+
+['#setting-target-kcal', '#setting-ratio-p', '#setting-ratio-f', '#setting-ratio-c']
+  .forEach(sel => $(sel).addEventListener('input', updateTargetPreview));
 
 // ---------- 設定画面: テンプレート管理 ----------
 let tplFormEditing = null; // 編集中の既存テンプレート(新規時はnull)
@@ -881,8 +980,14 @@ $('#save-settings-btn').addEventListener('click', () => {
   settings.githubRepo = $('#setting-github-repo').value.trim();
   settings.githubToken = $('#setting-github-token').value.trim();
   settings.targetKcal = Number($('#setting-target-kcal').value) || 0;
+  settings.pfcRatio = pfcRatio(readTargetInputs());
+  // 空欄は0で保存し、「未指定=自動計算を使う」を表す
+  settings.targetProtein = Number($('#setting-target-protein').value) || 0;
+  settings.targetFat = Number($('#setting-target-fat').value) || 0;
+  settings.targetCarbs = Number($('#setting-target-carbs').value) || 0;
   saveSettings(settings);
   toast('設定を保存しました');
+  updateTargetPreview();
   renderTodaySummary();
 });
 

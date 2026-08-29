@@ -19,6 +19,8 @@
   <main id="main">
     <!-- ============ 記録画面 ============ -->
     <section id="view-record" class="view active">
+      <div id="today-summary"></div>
+
       <div class="input-methods">
         <label class="btn btn-primary btn-large" for="photo-input">
           📷 写真で記録
@@ -70,7 +72,10 @@
         <div id="items-list"></div>
         <button class="btn btn-ghost" id="add-item-btn">＋ 品目を追加</button>
         <input type="text" id="meal-note" placeholder="メモ(店名など・任意)">
-        <div class="editor-total">合計: <strong id="editor-total-kcal">0</strong> kcal</div>
+        <div class="editor-total">
+          合計: <strong id="editor-total-kcal">0</strong> kcal
+          <span class="editor-total-pfc">P <span id="editor-total-p">0</span> / F <span id="editor-total-f">0</span> / C <span id="editor-total-c">0</span> g</span>
+        </div>
         <div class="editor-actions">
           <button class="btn btn-ghost" id="cancel-meal-btn">キャンセル</button>
           <button class="btn btn-primary" id="save-meal-btn">保存する</button>
@@ -79,13 +84,22 @@
 
       <button class="btn btn-ghost" id="manual-entry-btn">✏️ 手動で入力する</button>
 
-      <div id="today-summary" class="today-summary"></div>
     </section>
 
     <!-- ============ 履歴画面 ============ -->
     <section id="view-history" class="view">
+      <div id="history-nav" class="history-nav">
+        <div class="history-picker">
+          <button class="hist-step" id="hist-prev" aria-label="前の記録日へ">‹</button>
+          <input type="date" id="hist-date" aria-label="表示する日付">
+          <button class="hist-step" id="hist-next" aria-label="次の記録日へ">›</button>
+        </div>
+        <p class="hint" id="hist-range-info"></p>
+      </div>
       <div id="history-chart" class="history-chart"></div>
-      <div id="history-list" class="history-list"></div>
+      <h2 id="hist-date-label" class="hist-date-label"></h2>
+      <div id="history-summary"></div>
+      <div id="history-meals" class="history-list"></div>
     </section>
 
     <!-- ============ 提案画面 ============ -->
@@ -165,6 +179,22 @@
           <span>1日の目標カロリー (kcal)</span>
           <input type="number" id="setting-target-kcal" placeholder="2000" min="0" step="50">
         </label>
+
+        <p class="hint">PFCの目標は、目標カロリーを下の比率で割り当てて自動計算します(P/C は 4kcal/g、F は 9kcal/g 換算)。</p>
+        <div class="ratio-row">
+          <label>P (%)<input type="number" id="setting-ratio-p" min="0" max="100" step="1" placeholder="20"></label>
+          <label>F (%)<input type="number" id="setting-ratio-f" min="0" max="100" step="1" placeholder="25"></label>
+          <label>C (%)<input type="number" id="setting-ratio-c" min="0" max="100" step="1" placeholder="55"></label>
+        </div>
+        <p class="hint" id="ratio-warning" hidden></p>
+        <p class="hint" id="target-preview"></p>
+
+        <p class="hint">g を直接指定したい場合のみ入力してください(空欄なら上の自動計算値を使います)。</p>
+        <div class="ratio-row">
+          <label>P (g)<input type="number" id="setting-target-protein" min="0" step="0.1"></label>
+          <label>F (g)<input type="number" id="setting-target-fat" min="0" step="0.1"></label>
+          <label>C (g)<input type="number" id="setting-target-carbs" min="0" step="0.1"></label>
+        </div>
       </details>
 
       <details class="settings-group">

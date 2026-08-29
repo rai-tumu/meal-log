@@ -4,8 +4,37 @@ function num(v, digits = 1) {
   return Number.isInteger(n) ? String(n) : n.toFixed(digits);
 }
 
+/** 1食の栄養素合計。kcalは整数、P/F/Cは小数1位 */
+export function mealNutrients(meal) {
+  return sumItems(meal.items || []);
+}
+
+/** 複数食の栄養素合計。形式は mealNutrients と同じ */
+export function sumNutrients(meals) {
+  return sumItems(meals.flatMap(m => m.items || []));
+}
+
+function sumItems(items) {
+  const t = items.reduce((s, it) => ({
+    kcal: s.kcal + (Number(it.kcal) || 0),
+    protein: s.protein + (Number(it.protein) || 0),
+    fat: s.fat + (Number(it.fat) || 0),
+    carbs: s.carbs + (Number(it.carbs) || 0),
+  }), { kcal: 0, protein: 0, fat: 0, carbs: 0 });
+  return {
+    kcal: Math.round(t.kcal),
+    protein: round1(t.protein),
+    fat: round1(t.fat),
+    carbs: round1(t.carbs),
+  };
+}
+
+function round1(v) {
+  return Math.round(v * 10) / 10;
+}
+
 export function mealTotal(meal) {
-  return meal.items.reduce((s, it) => s + (Number(it.kcal) || 0), 0);
+  return mealNutrients(meal).kcal;
 }
 
 function groupByDate(meals) {
