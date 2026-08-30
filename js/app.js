@@ -448,6 +448,8 @@ async function renderHistory() {
   dateInput.min = min;
   dateInput.max = max;
   dateInput.value = historyDate;
+  // 表示テキストは自前で描く(入力欄は透明で重ねてあるだけ)
+  $('#hist-date-text').textContent = formatDateJa(historyDate, true);
   $('#hist-range-info').textContent =
     `この端末に残っている記録: ${formatDateJa(min, true)} 〜 ${formatDateJa(max, true)}`;
 

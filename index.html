@@ -91,7 +91,10 @@
       <div id="history-nav" class="history-nav">
         <div class="history-picker">
           <button class="hist-step" id="hist-prev" aria-label="前の記録日へ">‹</button>
-          <input type="date" id="hist-date" aria-label="表示する日付">
+          <div class="hist-date-field">
+            <span class="hist-date-text" id="hist-date-text"></span>
+            <input type="date" id="hist-date" aria-label="表示する日付">
+          </div>
           <button class="hist-step" id="hist-next" aria-label="次の記録日へ">›</button>
         </div>
         <p class="hint" id="hist-range-info"></p>
