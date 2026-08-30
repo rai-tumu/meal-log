@@ -502,8 +502,10 @@ function goToDate(date) {
   renderHistory();
 }
 
+// ネイティブの日付ピッカーで「リセット/クリア」を押すと値が空になる。
+// 空白のまま放置せず、今日の日付へ移動する
 $('#hist-date').addEventListener('change', (e) => {
-  if (e.target.value) goToDate(e.target.value);
+  goToDate(e.target.value || todayStr());
 });
 
 // 前後ボタンは記録のある日へジャンプする。境界はrenderHistoryがdisabledで制御
