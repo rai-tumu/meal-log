@@ -157,6 +157,15 @@
           <input type="password" id="setting-gemini-key" placeholder="AIza..." autocomplete="off">
         </label>
         <p class="hint">Google AI Studio (aistudio.google.com) で無料取得できます。クレジットカード登録不要・課金なし。</p>
+        <label class="field">
+          <span>解析モデル</span>
+          <select id="setting-gemini-model"></select>
+        </label>
+        <label class="field" id="setting-gemini-model-custom-field" hidden>
+          <span>モデルID</span>
+          <input type="text" id="setting-gemini-model-custom" placeholder="gemini-3.5-flash" autocomplete="off" spellcheck="false">
+        </label>
+        <p class="hint">既定の「自動」は、分量の判断が要る写真だけ新しいモデルを使い、テキストと提案は無料枠の広いモデルに回します。モデルが使えないときや1日の上限に達したときは自動で無料枠の広いモデルに切り替わるので、記録は止まりません。</p>
         <button class="btn btn-ghost" id="test-gemini-btn">接続テスト</button>
       </details>
 

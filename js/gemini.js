@@ -1,6 +1,39 @@
 // Gemini API(無料枠)で食事写真・テキストからカロリー推定
-const MODEL = 'gemini-2.5-flash';
-const ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`;
+
+// ---------- モデル選択 ----------
+// 実測(2026-08〜09: AI呼び出し111回 / 28日、平均4回/日・ピーク8回/日)にもとづく既定値。
+// 新しい世代ほど無料枠の1日あたり上限が小さいので、用途で振り分けて上限に当たりにくくする。
+//   写真解析      … 月32回。分量の見積もりに視覚推論が効くので新しい世代を使う。
+//   テキスト/提案 … 月79回。精度差が出にくく回数が多いので、枠の広い世代に任せる。
+export const VISION_MODEL = 'gemini-3.5-flash';
+export const TEXT_MODEL = 'gemini-2.5-flash';
+// モデル廃止(404)や上限超過(429)のときに落とす先。常に枠の広い世代を置くこと。
+export const FALLBACK_MODEL = 'gemini-2.5-flash';
+
+/** 設定画面のモデル選択に出す候補。値が空文字なら用途別の既定を使う。 */
+export const MODEL_OPTIONS = [
+  { value: '', label: `自動(写真: ${VISION_MODEL} / テキスト: ${TEXT_MODEL})` },
+  { value: VISION_MODEL, label: `${VISION_MODEL}(すべてこれで解析)` },
+  { value: TEXT_MODEL, label: `${TEXT_MODEL}(すべてこれで解析)` },
+];
+
+const endpointFor = (model) =>
+  `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
+
+// 設定画面で明示指定されたモデルID。空なら用途別の既定(VISION/TEXT)を使う。
+let modelOverride = '';
+export function setModelOverride(model) {
+  modelOverride = (model || '').trim();
+}
+
+// このセッションで使えないと分かったモデル。毎回1回分を無駄打ちしないよう覚えておく。
+// 429(日次上限)も含めるが、翌日や再読み込み後にはまた既定モデルから試される。
+const unavailableModels = new Set();
+
+function resolveModel(kind) {
+  const model = modelOverride || (kind === 'vision' ? VISION_MODEL : TEXT_MODEL);
+  return unavailableModels.has(model) ? FALLBACK_MODEL : model;
+}
 
 const PROMPT = `あなたは栄養士です。与えられた食事(写真またはテキスト)に含まれる料理を特定し、
 日本の一般的な提供量を基準に、品目ごとの推定カロリーと栄養素を算出してください。
@@ -58,31 +91,50 @@ export async function prepareImage(file, maxSize = 1024) {
   };
 }
 
-/**
- * 食事を解析する。imageかtextのどちらかを渡す。
- * @returns {Promise<{items: Array, note: string}>}
- */
-/** JSONモードでGeminiを呼び、パース済みオブジェクトを返す */
-async function callGeminiJson({ apiKey, parts, temperature, parseErrorMessage }) {
-  const res = await fetch(`${ENDPOINT}?key=${encodeURIComponent(apiKey)}`, {
+function postToModel({ apiKey, model, body }) {
+  return fetch(`${endpointFor(model)}?key=${encodeURIComponent(apiKey)}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      contents: [{ parts }],
-      generationConfig: {
-        response_mime_type: 'application/json',
-        temperature,
-      },
-    }),
+    body,
+  });
+}
+
+/**
+ * JSONモードでGeminiを呼び、パース済みオブジェクトを返す。
+ * 指定モデルが使えない(404)/上限超過(429)なら、枠の広いモデルへ1度だけ落として続行する。
+ * 記録できないより、少し精度の落ちるモデルでも記録できる方を優先する。
+ * @returns {Promise<{parsed: object, model: string, fellBack: boolean}>}
+ */
+async function callGeminiJson({ apiKey, parts, temperature, parseErrorMessage, kind = 'text' }) {
+  const body = JSON.stringify({
+    contents: [{ parts }],
+    generationConfig: {
+      response_mime_type: 'application/json',
+      temperature,
+    },
   });
 
+  let model = resolveModel(kind);
+  let res = await postToModel({ apiKey, model, body });
+  let fellBack = false;
+
+  if (!res.ok && model !== FALLBACK_MODEL && (res.status === 404 || res.status === 429)) {
+    unavailableModels.add(model);
+    model = FALLBACK_MODEL;
+    fellBack = true;
+    res = await postToModel({ apiKey, model, body });
+  }
+
   if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    if (res.status === 400 && body.includes('API_KEY')) {
+    const errBody = await res.text().catch(() => '');
+    if (res.status === 400 && errBody.includes('API_KEY')) {
       throw new Error('APIキーが無効です。設定を確認してください。');
     }
     if (res.status === 429) {
       throw new Error('無料枠の利用上限に達しました。しばらく待ってから試してください。');
+    }
+    if (res.status === 404) {
+      throw new Error(`モデル ${model} を利用できません。設定画面でモデルを変更してください。`);
     }
     throw new Error(`Gemini APIエラー (${res.status})`);
   }
@@ -90,12 +142,17 @@ async function callGeminiJson({ apiKey, parts, temperature, parseErrorMessage })
   const data = await res.json();
   const textOut = data?.candidates?.[0]?.content?.parts?.map(p => p.text).join('') ?? '';
   try {
-    return JSON.parse(textOut);
+    return { parsed: JSON.parse(textOut), model, fellBack };
   } catch {
     throw new Error(parseErrorMessage);
   }
 }
 
+/**
+ * 食事を解析する。imageかtextのどちらかを渡す。
+ * @returns {Promise<{items: Array, note: string, model: string, fellBack: boolean}>}
+ *   model は実際に応答したモデルID、fellBack はフォールバックが起きたかどうか
+ */
 export async function analyzeFood({ apiKey, image, text }) {
   const parts = [{ text: PROMPT }];
   if (image) {
@@ -105,11 +162,12 @@ export async function analyzeFood({ apiKey, image, text }) {
     parts.push({ text: `食事内容: ${text}` });
   }
 
-  const parsed = await callGeminiJson({
+  const { parsed, model, fellBack } = await callGeminiJson({
     apiKey,
     parts,
     temperature: 0.2,
     parseErrorMessage: '解析結果を読み取れませんでした。もう一度試すか手動入力してください。',
+    kind: image ? 'vision' : 'text',
   });
 
   const items = (parsed.items || []).map(it => ({
@@ -120,7 +178,7 @@ export async function analyzeFood({ apiKey, image, text }) {
     carbs: Number(it.carbs) || 0,
   })).filter(it => it.name);
 
-  return { items, note: String(parsed.note ?? '') };
+  return { items, note: String(parsed.note ?? ''), model, fellBack };
 }
 
 const SUGGEST_PROMPT = `あなたは、その人の食事履歴を熟知した管理栄養士です。
@@ -191,11 +249,12 @@ export async function suggestMeals({ apiKey, profile, mode = 'any', mood = '' })
     lines.push('【注記】記録がまだ少ないため、好みの推定は控えめにし、一般的で失敗の少ない候補を中心に提案してください。');
   }
 
-  const parsed = await callGeminiJson({
+  const { parsed } = await callGeminiJson({
     apiKey,
     parts: [{ text: SUGGEST_PROMPT }, { text: lines.join('\n') }],
     temperature: 0.9, // 提案は毎回変化してほしいので高め
     parseErrorMessage: '提案を読み取れませんでした。もう一度試してください。',
+    kind: 'text',
   });
 
   return (parsed.suggestions || []).map(s => ({
@@ -207,13 +266,19 @@ export async function suggestMeals({ apiKey, profile, mode = 'any', mood = '' })
   })).filter(s => s.name);
 }
 
-/** 設定画面の接続テスト用 */
-export async function testConnection(apiKey) {
-  const res = await fetch(`${ENDPOINT}?key=${encodeURIComponent(apiKey)}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ contents: [{ parts: [{ text: 'test: reply "ok"' }] }] }),
-  });
+/**
+ * 設定画面の接続テスト用。写真解析に使うモデルで疎通を確認する
+ * (テキスト用は写真用より枠の広いモデルなので、こちらが通れば実用上は足りる)。
+ * @returns {Promise<{model: string}>} 応答したモデルID
+ */
+export async function testConnection(apiKey, model) {
+  // 空文字は「自動」の意味なので、写真解析の既定モデルを試す
+  const target = (model || '').trim() || VISION_MODEL;
+  const body = JSON.stringify({ contents: [{ parts: [{ text: 'test: reply "ok"' }] }] });
+  const res = await postToModel({ apiKey, model: target, body });
+  if (res.status === 404) {
+    throw new Error(`モデル ${target} を利用できません。モデルIDを確認してください。`);
+  }
   if (!res.ok) throw new Error(`接続失敗 (${res.status})`);
-  return true;
+  return { model: target };
 }

@@ -22,6 +22,7 @@ function saveSettings(s) {
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
 }
 let settings = loadSettings();
+gemini.setModelOverride(settings.geminiModel);
 
 // ---------- ユーティリティ ----------
 let toastTimer = null;
@@ -316,6 +317,13 @@ $('#tpl-add-btn').addEventListener('click', () => {
 });
 
 // ---------- 記録画面: 写真・テキスト解析 ----------
+/** 解析完了メッセージ。モデルが自動で切り替わったときだけ、その旨を添える */
+function analyzeDoneMessage(result) {
+  const note = result.note ? ': ' + result.note : '';
+  const fallback = result.fellBack ? ` (${result.model} に自動切替)` : '';
+  return `✅ 解析完了${note}${fallback} — 内容を確認・修正して保存してください`;
+}
+
 function setAnalyzeStatus(msg, isError = false) {
   const el = $('#analyze-status');
   el.textContent = msg;
@@ -344,7 +352,7 @@ async function handlePhoto(file) {
       openEditor({ items: [emptyItem()], source: 'photo' });
       return;
     }
-    setAnalyzeStatus(`✅ 解析完了${result.note ? ': ' + result.note : ''} — 内容を確認・修正して保存してください`);
+    setAnalyzeStatus(analyzeDoneMessage(result));
     openEditor({ items: result.items, note: '', source: 'photo', title: '解析結果の確認' });
   } catch (e) {
     setAnalyzeStatus(`⚠️ ${e.message}`, true);
@@ -386,7 +394,7 @@ async function analyzeText() {
       openEditor({ items: [emptyItem()], source: 'text' });
       return;
     }
-    setAnalyzeStatus(`✅ 解析完了${result.note ? ': ' + result.note : ''} — 内容を確認・修正して保存してください`);
+    setAnalyzeStatus(analyzeDoneMessage(result));
     openEditor({ items: result.items, source: 'text', title: '解析結果の確認' });
   } catch (e) {
     setAnalyzeStatus(`⚠️ ${e.message}`, true);
@@ -810,8 +818,37 @@ async function runSync() {
 window.addEventListener('online', runSync);
 
 // ---------- 設定画面 ----------
+// モデル選択。候補はgemini.js側に集約し、一覧にないIDは「カスタム」で直接指定できるようにする
+// (モデルIDは廃止・追加が頻繁なので、アプリを触らずに差し替えられる逃げ道を残す)。
+const CUSTOM_MODEL = '__custom__';
+
+function initModelSelect() {
+  const sel = $('#setting-gemini-model');
+  sel.innerHTML = '';
+  for (const opt of [...gemini.MODEL_OPTIONS, { value: CUSTOM_MODEL, label: 'カスタム(モデルIDを直接指定)' }]) {
+    sel.add(new Option(opt.label, opt.value));
+  }
+
+  const saved = settings.geminiModel || '';
+  const isPreset = gemini.MODEL_OPTIONS.some(o => o.value === saved);
+  sel.value = isPreset ? saved : CUSTOM_MODEL;
+  $('#setting-gemini-model-custom').value = isPreset ? '' : saved;
+  updateModelCustomField();
+}
+
+function updateModelCustomField() {
+  $('#setting-gemini-model-custom-field').hidden = $('#setting-gemini-model').value !== CUSTOM_MODEL;
+}
+
+/** 設定画面の入力から、保存すべきモデルID(自動なら空文字)を読み取る */
+function readModelSetting() {
+  const sel = $('#setting-gemini-model').value;
+  return sel === CUSTOM_MODEL ? $('#setting-gemini-model-custom').value.trim() : sel;
+}
+
 function initSettingsView() {
   $('#setting-gemini-key').value = settings.geminiKey || '';
+  initModelSelect();
   $('#setting-github-repo').value = settings.githubRepo || '';
   $('#setting-github-token').value = settings.githubToken || '';
   $('#setting-target-kcal').value = settings.targetKcal || '';
@@ -979,8 +1016,12 @@ function updateLastSyncInfo() {
   }
 }
 
+$('#setting-gemini-model').addEventListener('change', updateModelCustomField);
+
 $('#save-settings-btn').addEventListener('click', () => {
   settings.geminiKey = $('#setting-gemini-key').value.trim();
+  settings.geminiModel = readModelSetting();
+  gemini.setModelOverride(settings.geminiModel);
   settings.githubRepo = $('#setting-github-repo').value.trim();
   settings.githubToken = $('#setting-github-token').value.trim();
   settings.targetKcal = Number($('#setting-target-kcal').value) || 0;
@@ -1000,8 +1041,9 @@ $('#test-gemini-btn').addEventListener('click', async (e) => {
   if (!key) { toast('APIキーを入力してください'); return; }
   e.target.disabled = true;
   try {
-    await gemini.testConnection(key);
-    toast('✅ Gemini接続OK');
+    // 保存前でも、いま選んでいるモデルで試せるようにする
+    const { model } = await gemini.testConnection(key, readModelSetting());
+    toast(`✅ Gemini接続OK (${model})`, 3500);
   } catch (err) {
     toast(`⚠️ ${err.message}`);
   } finally {
