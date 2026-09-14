@@ -2,19 +2,29 @@
 
 // ---------- モデル選択 ----------
 // 実測(2026-08〜09: AI呼び出し111回 / 28日、平均4回/日・ピーク8回/日)にもとづく既定値。
-// 新しい世代ほど無料枠の1日あたり上限が小さいので、用途で振り分けて上限に当たりにくくする。
-//   写真解析      … 月32回。分量の見積もりに視覚推論が効くので新しい世代を使う。
-//   テキスト/提案 … 月79回。精度差が出にくく回数が多いので、枠の広い世代に任せる。
+//   写真解析(月32回)   … 盛り付けから分量を見積もる部分に精度が効くので、最上位のFlashを使う。
+//   提案(月30回程度)   … 好みの読み取りと献立の組み立ては推論力が効くので、写真と同じモデル。
+//   テキスト解析(月79回) … 回数が多く精度差も出にくい。単価は2.5 Flashと同額のまま世代だけ
+//                          新しくできるFlash-Liteに置く。
 export const VISION_MODEL = 'gemini-3.5-flash';
-export const TEXT_MODEL = 'gemini-2.5-flash';
+export const TEXT_MODEL = 'gemini-3.5-flash-lite';
+export const SUGGEST_MODEL = 'gemini-3.5-flash';
 // モデル廃止(404)や上限超過(429)のときに落とす先。常に枠の広い世代を置くこと。
 export const FALLBACK_MODEL = 'gemini-2.5-flash';
 
+// 用途(kind)ごとの既定モデル
+const MODEL_BY_KIND = {
+  vision: VISION_MODEL,
+  text: TEXT_MODEL,
+  suggest: SUGGEST_MODEL,
+};
+
 /** 設定画面のモデル選択に出す候補。値が空文字なら用途別の既定を使う。 */
 export const MODEL_OPTIONS = [
-  { value: '', label: `自動(写真: ${VISION_MODEL} / テキスト: ${TEXT_MODEL})` },
+  { value: '', label: `自動(写真・提案: ${VISION_MODEL} / テキスト: ${TEXT_MODEL})` },
   { value: VISION_MODEL, label: `${VISION_MODEL}(すべてこれで解析)` },
   { value: TEXT_MODEL, label: `${TEXT_MODEL}(すべてこれで解析)` },
+  { value: FALLBACK_MODEL, label: `${FALLBACK_MODEL}(すべてこれで解析)` },
 ];
 
 const endpointFor = (model) =>
@@ -31,7 +41,7 @@ export function setModelOverride(model) {
 const unavailableModels = new Set();
 
 function resolveModel(kind) {
-  const model = modelOverride || (kind === 'vision' ? VISION_MODEL : TEXT_MODEL);
+  const model = modelOverride || MODEL_BY_KIND[kind] || TEXT_MODEL;
   return unavailableModels.has(model) ? FALLBACK_MODEL : model;
 }
 
@@ -254,7 +264,7 @@ export async function suggestMeals({ apiKey, profile, mode = 'any', mood = '' })
     parts: [{ text: SUGGEST_PROMPT }, { text: lines.join('\n') }],
     temperature: 0.9, // 提案は毎回変化してほしいので高め
     parseErrorMessage: '提案を読み取れませんでした。もう一度試してください。',
-    kind: 'text',
+    kind: 'suggest',
   });
 
   return (parsed.suggestions || []).map(s => ({
