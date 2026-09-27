@@ -1051,6 +1051,41 @@ $('#test-gemini-btn').addEventListener('click', async (e) => {
   }
 });
 
+// ---------- 設定画面: AI呼び出しログ ----------
+function renderAiLog() {
+  const s = gemini.summarizeCallLog();
+  if (s.calls === 0) {
+    $('#ai-log-summary').textContent = 'まだ記録がありません。';
+    return;
+  }
+  const pct = (n, d) => (d ? Math.round((n / d) * 100) : 0);
+  const lines = [
+    `呼び出し ${s.calls}回 / 失敗 ${s.failedCalls}回 (${pct(s.failedCalls, s.calls)}%) / 自動切替 ${s.fellBackCalls}回`,
+    ...s.byModel.map(m => {
+      const reasons = Object.entries(m.reasons).map(([k, v]) => `${k}×${v}`).join(', ');
+      return `・${m.model}: 試行${m.attempts} 失敗${m.failures} (${pct(m.failures, m.attempts)}%) 平均${(m.avgMs / 1000).toFixed(1)}秒${reasons ? ` [${reasons}]` : ''}`;
+    }),
+  ];
+  $('#ai-log-summary').textContent = lines.join('\n');
+}
+
+$('#ai-log').addEventListener('toggle', (e) => { if (e.target.open) renderAiLog(); });
+
+$('#ai-log-copy-btn').addEventListener('click', async () => {
+  try {
+    await navigator.clipboard.writeText(JSON.stringify(gemini.getCallLog(), null, 1));
+    toast('ログをコピーしました');
+  } catch {
+    toast('⚠️ コピーできませんでした');
+  }
+});
+
+$('#ai-log-clear-btn').addEventListener('click', () => {
+  if (!confirm('AI呼び出しログを消去しますか?')) return;
+  gemini.clearCallLog();
+  renderAiLog();
+});
+
 $('#test-github-btn').addEventListener('click', async (e) => {
   const repo = $('#setting-github-repo').value.trim();
   const token = $('#setting-github-token').value.trim();

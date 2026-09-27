@@ -709,3 +709,8 @@ main { padding: 16px; max-width: 560px; margin: 0 auto; }
 .tpl-f-nutrients input {
   background: var(--bg);
 }
+
+.ai-log { margin-top: 12px; }
+.ai-log summary { font-size: 0.85rem; color: var(--text-sub); cursor: pointer; }
+.ai-log-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+#ai-log-summary { white-space: pre-line; }

@@ -165,8 +165,17 @@
           <span>モデルID</span>
           <input type="text" id="setting-gemini-model-custom" placeholder="gemini-3.5-flash" autocomplete="off" spellcheck="false">
         </label>
-        <p class="hint">既定の「自動」は、精度が効く写真解析と提案に上位モデルを、回数の多いテキスト解析に同単価で世代の新しい軽量モデルを使います。モデルが使えないときや1日の上限に達したときは自動で無料枠の広いモデルに切り替わるので、記録は止まりません。</p>
+        <p class="hint">既定の「自動」は、精度が効く写真解析と提案に上位モデルを、回数の多いテキスト解析に同単価で世代の新しい軽量モデルを使います。モデルが使えない・上限に達した・混雑している・応答が遅すぎるときは自動で無料枠の広いモデルに切り替わるので、記録は止まりません。</p>
         <button class="btn btn-ghost" id="test-gemini-btn">接続テスト</button>
+        <details class="ai-log" id="ai-log">
+          <summary>AI呼び出しログ(エラー調査用)</summary>
+          <div id="ai-log-summary" class="hint"></div>
+          <div class="ai-log-actions">
+            <button class="btn btn-ghost" id="ai-log-copy-btn">ログをコピー</button>
+            <button class="btn btn-ghost" id="ai-log-clear-btn">ログを消去</button>
+          </div>
+          <p class="hint">直近200回分の解析・提案の成否、モデル、所要時間、思考トークン数を端末内にだけ記録しています。エラーが続くときはコピーして共有してください。</p>
+        </details>
       </details>
 
       <details class="settings-group">

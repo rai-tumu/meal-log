@@ -36,13 +36,109 @@ export function setModelOverride(model) {
   modelOverride = (model || '').trim();
 }
 
-// このセッションで使えないと分かったモデル。毎回1回分を無駄打ちしないよう覚えておく。
-// 429(日次上限)も含めるが、翌日や再読み込み後にはまた既定モデルから試される。
-const unavailableModels = new Set();
+// このセッションで使えないと分かったモデルと、使わない期限(ms)。毎回1回分を無駄打ちしないよう覚えておく。
+// 404(廃止)はセッション中ずっと、429(上限超過)は分単位の制限で解けることが多いので一定時間だけ避ける。
+const unavailableUntil = new Map();
+const RATE_LIMIT_COOLDOWN_MS = 10 * 60 * 1000;
+
+function isUnavailable(model) {
+  const until = unavailableUntil.get(model);
+  if (until === undefined) return false;
+  if (Date.now() < until) return true;
+  unavailableUntil.delete(model);
+  return false;
+}
 
 function resolveModel(kind) {
   const model = modelOverride || MODEL_BY_KIND[kind] || TEXT_MODEL;
-  return unavailableModels.has(model) ? FALLBACK_MODEL : model;
+  return isUnavailable(model) ? FALLBACK_MODEL : model;
+}
+
+// ---------- タイムアウト・生成設定 ----------
+// 応答待ちの上限。品数の多い写真は推論が長くなるが、上限なしだとスマホのブラウザ側で
+// 通信が切れて原因の分からない失敗になるため、こちらで打ち切ってフォールバックへ回す。
+const TIMEOUT_MS = { vision: 40000, text: 20000, suggest: 30000 };
+const TEST_TIMEOUT_MS = 15000;
+// 混雑(500/503/504)や通信断のとき、同じモデルで再試行するまでの待ち時間
+const RETRY_DELAY_MS = 1500;
+
+const isGemini3 = (model) => /^gemini-3/.test(model);
+const isGemini25 = (model) => /^gemini-2\.5/.test(model);
+
+/**
+ * モデル世代に合わせた generationConfig。
+ * - 3.x: 思考量を thinkingLevel で抑える(既定のままだと品数に比例して思考が伸び、遅延とタイムアウトの主因になる)。
+ *   temperature は公式推奨どおり既定の1.0に任せる(下げるとループや劣化が起き得るとされる)。
+ * - 2.5: 思考を thinkingBudget で上限を切り、temperature は従来どおり指定する。
+ * thinkingLevel と thinkingBudget を同時に送ると400になるので、必ずどちらか一方にする。
+ */
+function generationConfigFor(model, temperature) {
+  const config = { response_mime_type: 'application/json' };
+  if (isGemini3(model)) {
+    config.thinkingConfig = { thinkingLevel: 'low' };
+  } else {
+    config.temperature = temperature;
+    if (isGemini25(model)) config.thinkingConfig = { thinkingBudget: 1024 };
+  }
+  return config;
+}
+
+// ---------- 呼び出しログ(原因調査用) ----------
+// 1試行ごとに端末内へ記録する。設定画面で集計とコピーができる。キーや画像そのものは残さない。
+const LOG_KEY = 'meallog-ai-log';
+const LOG_MAX = 200;
+
+function readLog() {
+  try { return JSON.parse(localStorage.getItem(LOG_KEY)) || []; } catch { return []; }
+}
+
+function appendLog(entry) {
+  try {
+    const log = readLog();
+    log.push(entry);
+    localStorage.setItem(LOG_KEY, JSON.stringify(log.slice(-LOG_MAX)));
+  } catch { /* 記録できなくても解析は続ける */ }
+}
+
+export function getCallLog() {
+  return readLog();
+}
+
+export function clearCallLog() {
+  try { localStorage.removeItem(LOG_KEY); } catch { /* noop */ }
+}
+
+/**
+ * ログの集計。呼び出し(callId)単位の成否と、モデル別の試行成績を返す。
+ * @returns {{calls: number, failedCalls: number, fellBackCalls: number,
+ *   byModel: Array<{model, attempts, failures, avgMs, reasons: object}>}}
+ */
+export function summarizeCallLog(log = readLog()) {
+  const calls = new Map();
+  const models = new Map();
+  for (const e of log) {
+    const c = calls.get(e.callId) || { ok: false, fellBack: false };
+    if (e.ok) c.ok = true;
+    if (e.fellBack) c.fellBack = true;
+    calls.set(e.callId, c);
+
+    const m = models.get(e.model) || { model: e.model, attempts: 0, failures: 0, totalMs: 0, reasons: {} };
+    m.attempts++;
+    m.totalMs += e.ms || 0;
+    if (!e.ok) {
+      m.failures++;
+      const key = e.status ? `${e.reason}:${e.status}` : (e.finishReason ? `${e.reason}:${e.finishReason}` : e.reason);
+      m.reasons[key] = (m.reasons[key] || 0) + 1;
+    }
+    models.set(e.model, m);
+  }
+  const callList = [...calls.values()];
+  return {
+    calls: callList.length,
+    failedCalls: callList.filter(c => !c.ok).length,
+    fellBackCalls: callList.filter(c => c.fellBack).length,
+    byModel: [...models.values()].map(({ totalMs, ...m }) => ({ ...m, avgMs: Math.round(totalMs / m.attempts) })),
+  };
 }
 
 const PROMPT = `あなたは栄養士です。与えられた食事(写真またはテキスト)に含まれる料理を特定し、
@@ -60,7 +156,7 @@ const PROMPT = `あなたは栄養士です。与えられた食事(写真また
   "items": [
     {"name": "品目名(日本語)", "kcal": 数値, "protein": 数値, "fat": 数値, "carbs": 数値}
   ],
-  "note": "推定の根拠や量の想定などの補足(簡潔に)"
+  "note": "推定の根拠や量の想定などの補足(60字以内で簡潔に)"
 }
 
 - kcalは整数、protein/fat/carbsはグラム単位の数値(小数1桁まで)
@@ -101,60 +197,162 @@ export async function prepareImage(file, maxSize = 1024) {
   };
 }
 
-function postToModel({ apiKey, model, body }) {
-  return fetch(`${endpointFor(model)}?key=${encodeURIComponent(apiKey)}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body,
-  });
+/** 1試行の失敗。reason で種類を、status/finishReason で詳細を表す */
+class GeminiError extends Error {
+  constructor(reason, { status = 0, finishReason = '', detail = '' } = {}) {
+    super(reason);
+    this.reason = reason; // 'timeout' | 'network' | 'http' | 'finish' | 'parse'
+    this.status = status;
+    this.finishReason = finishReason;
+    this.detail = detail;
+  }
+}
+
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+/**
+ * タイムアウト付きでPOSTし、応答JSONまで読み切る(本文の受信中に固まることもあるため、そこまで含めて打ち切る)。
+ * @returns {Promise<object>} レスポンスJSON
+ */
+async function postJson({ apiKey, model, body, timeoutMs }) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    let res;
+    try {
+      res = await fetch(`${endpointFor(model)}?key=${encodeURIComponent(apiKey)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+        signal: ctrl.signal,
+      });
+    } catch {
+      throw new GeminiError(ctrl.signal.aborted ? 'timeout' : 'network');
+    }
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '');
+      throw new GeminiError('http', { status: res.status, detail });
+    }
+    try {
+      return await res.json();
+    } catch {
+      throw new GeminiError(ctrl.signal.aborted ? 'timeout' : 'parse');
+    }
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** 候補テキストを取り出してJSONとして読む。途中で切れた・ブロックされた応答はここで弾く */
+function parseCandidate(data) {
+  const blockReason = data?.promptFeedback?.blockReason;
+  if (blockReason) throw new GeminiError('finish', { finishReason: blockReason });
+  const cand = data?.candidates?.[0];
+  const finishReason = cand?.finishReason || '';
+  if (finishReason && finishReason !== 'STOP') throw new GeminiError('finish', { finishReason });
+  const textOut = cand?.content?.parts?.map(p => p.text).join('') ?? '';
+  try {
+    return JSON.parse(textOut);
+  } catch {
+    throw new GeminiError('parse', { detail: textOut });
+  }
+}
+
+const isApiKeyError = (err) => err.reason === 'http' && err.status === 400 && err.detail.includes('API_KEY');
+// 同じモデルでもう一度試す価値がある失敗(一時的な混雑・通信断)
+const isTransient = (err) =>
+  err.reason === 'network' || (err.reason === 'http' && [500, 503, 504].includes(err.status));
+// フォールバック先のモデルなら通る見込みがある失敗。キー不正や安全フィルタはモデルを変えても同じ
+function canFallBack(err) {
+  if (isApiKeyError(err)) return false;
+  if (err.reason === 'finish') return err.finishReason === 'MAX_TOKENS';
+  return true;
+}
+
+/** 最終的な失敗を、ユーザーが次に何をすればよいか分かるメッセージにする */
+function userMessage(err, { model, kind, parseErrorMessage }) {
+  switch (err.reason) {
+    case 'timeout':
+      return kind === 'vision'
+        ? `解析に時間がかかりすぎたため中断しました(${TIMEOUT_MS.vision / 1000}秒)。品数の多い写真は少し時間をおいて再試行するか、手動で入力してください。`
+        : `応答に時間がかかりすぎたため中断しました(${TIMEOUT_MS[kind] / 1000}秒)。もう一度試してください。`;
+    case 'network':
+      return navigator.onLine === false
+        ? 'オフラインのため解析できません。通信環境を確認してください。'
+        : 'Gemini APIに接続できませんでした。通信環境を確認してもう一度試してください。';
+    case 'finish':
+      return err.finishReason === 'MAX_TOKENS'
+        ? '解析結果が長くなりすぎて途中で切れました。品数を分けて撮影するか、手動で入力してください。'
+        : `安全フィルタ等により解析できませんでした (${err.finishReason})。手動で入力してください。`;
+    case 'parse':
+      return parseErrorMessage;
+  }
+  if (isApiKeyError(err)) return 'APIキーが無効です。設定を確認してください。';
+  if (err.status === 429) return '無料枠の利用上限に達しました。しばらく待ってから試してください。';
+  if (err.status === 404) return `モデル ${model} を利用できません。設定画面でモデルを変更してください。`;
+  if ([500, 503, 504].includes(err.status)) return `Geminiが混雑しています (${err.status})。少し時間をおいて試してください。`;
+  let apiMsg = '';
+  try { apiMsg = JSON.parse(err.detail)?.error?.message || ''; } catch { /* 本文がJSONでない */ }
+  return `Gemini APIエラー (${err.status})${apiMsg ? ': ' + apiMsg.slice(0, 100) : ''}`;
+}
+
+/** base64のinline_dataから、送った画像のおおよそのKBを出す(ログ用) */
+function imageKB(parts) {
+  const b64 = parts.find(p => p.inline_data)?.inline_data.data;
+  return b64 ? Math.round(b64.length * 3 / 4 / 1024) : 0;
 }
 
 /**
  * JSONモードでGeminiを呼び、パース済みオブジェクトを返す。
- * 指定モデルが使えない(404)/上限超過(429)なら、枠の広いモデルへ1度だけ落として続行する。
+ * - 混雑(500/503/504)・通信断は同じモデルで1度だけ再試行する。
+ * - タイムアウトは同じモデルだと再び遅いので、再試行せずフォールバックへ回す。
+ * - それでも失敗したら、枠が広く応答の速いモデルへ1度だけ落として続行する。
  * 記録できないより、少し精度の落ちるモデルでも記録できる方を優先する。
  * @returns {Promise<{parsed: object, model: string, fellBack: boolean}>}
  */
 async function callGeminiJson({ apiKey, parts, temperature, parseErrorMessage, kind = 'text' }) {
-  const body = JSON.stringify({
-    contents: [{ parts }],
-    generationConfig: {
-      response_mime_type: 'application/json',
-      temperature,
-    },
-  });
-
+  if (navigator.onLine === false) {
+    throw new Error(userMessage(new GeminiError('network'), { kind }));
+  }
+  const callId = Math.random().toString(36).slice(2, 10);
+  const kb = imageKB(parts);
   let model = resolveModel(kind);
-  let res = await postToModel({ apiKey, model, body });
   let fellBack = false;
+  let retried = false;
 
-  if (!res.ok && model !== FALLBACK_MODEL && (res.status === 404 || res.status === 429)) {
-    unavailableModels.add(model);
-    model = FALLBACK_MODEL;
-    fellBack = true;
-    res = await postToModel({ apiKey, model, body });
-  }
+  for (;;) {
+    const body = JSON.stringify({ contents: [{ parts }], generationConfig: generationConfigFor(model, temperature) });
+    const started = Date.now();
+    const entry = { at: new Date().toISOString(), callId, kind, model, fellBack, imageKB: kb };
+    try {
+      const data = await postJson({ apiKey, model, body, timeoutMs: TIMEOUT_MS[kind] || TIMEOUT_MS.text });
+      const u = data?.usageMetadata || {};
+      entry.tokens = { prompt: u.promptTokenCount, thoughts: u.thoughtsTokenCount, output: u.candidatesTokenCount };
+      const parsed = parseCandidate(data);
+      appendLog({ ...entry, ok: true, ms: Date.now() - started,
+        items: (parsed.items || parsed.suggestions || []).length });
+      return { parsed, model, fellBack };
+    } catch (err) {
+      if (!(err instanceof GeminiError)) throw err;
+      appendLog({ ...entry, ok: false, ms: Date.now() - started, reason: err.reason,
+        status: err.status || undefined, finishReason: err.finishReason || undefined,
+        detail: err.detail ? err.detail.slice(0, 300) : undefined });
 
-  if (!res.ok) {
-    const errBody = await res.text().catch(() => '');
-    if (res.status === 400 && errBody.includes('API_KEY')) {
-      throw new Error('APIキーが無効です。設定を確認してください。');
+      if (isTransient(err) && !retried) {
+        retried = true;
+        await sleep(RETRY_DELAY_MS);
+        continue;
+      }
+      if (model !== FALLBACK_MODEL && canFallBack(err)) {
+        if (err.status === 404) unavailableUntil.set(model, Infinity);
+        if (err.status === 429) unavailableUntil.set(model, Date.now() + RATE_LIMIT_COOLDOWN_MS);
+        model = FALLBACK_MODEL;
+        fellBack = true;
+        retried = true; // フォールバック先では再試行しない(待ち時間が延びすぎるため)
+        continue;
+      }
+      throw new Error(userMessage(err, { model, kind, parseErrorMessage }));
     }
-    if (res.status === 429) {
-      throw new Error('無料枠の利用上限に達しました。しばらく待ってから試してください。');
-    }
-    if (res.status === 404) {
-      throw new Error(`モデル ${model} を利用できません。設定画面でモデルを変更してください。`);
-    }
-    throw new Error(`Gemini APIエラー (${res.status})`);
-  }
-
-  const data = await res.json();
-  const textOut = data?.candidates?.[0]?.content?.parts?.map(p => p.text).join('') ?? '';
-  try {
-    return { parsed: JSON.parse(textOut), model, fellBack };
-  } catch {
-    throw new Error(parseErrorMessage);
   }
 }
 
@@ -262,7 +460,7 @@ export async function suggestMeals({ apiKey, profile, mode = 'any', mood = '' })
   const { parsed } = await callGeminiJson({
     apiKey,
     parts: [{ text: SUGGEST_PROMPT }, { text: lines.join('\n') }],
-    temperature: 0.9, // 提案は毎回変化してほしいので高め
+    temperature: 0.9, // 提案は毎回変化してほしいので高め(3.x には送らず既定の1.0を使う)
     parseErrorMessage: '提案を読み取れませんでした。もう一度試してください。',
     kind: 'suggest',
   });
@@ -285,10 +483,13 @@ export async function testConnection(apiKey, model) {
   // 空文字は「自動」の意味なので、写真解析の既定モデルを試す
   const target = (model || '').trim() || VISION_MODEL;
   const body = JSON.stringify({ contents: [{ parts: [{ text: 'test: reply "ok"' }] }] });
-  const res = await postToModel({ apiKey, model: target, body });
-  if (res.status === 404) {
-    throw new Error(`モデル ${target} を利用できません。モデルIDを確認してください。`);
+  try {
+    await postJson({ apiKey, model: target, body, timeoutMs: TEST_TIMEOUT_MS });
+  } catch (err) {
+    if (err.status === 404) throw new Error(`モデル ${target} を利用できません。モデルIDを確認してください。`);
+    if (err.reason === 'timeout') throw new Error(`接続失敗 (${TEST_TIMEOUT_MS / 1000}秒以内に応答なし)`);
+    if (err.reason === 'network') throw new Error('接続失敗 (通信エラー)');
+    throw new Error(`接続失敗 (${err.status || err.reason})`);
   }
-  if (!res.ok) throw new Error(`接続失敗 (${res.status})`);
   return { model: target };
 }
