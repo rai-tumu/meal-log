@@ -22,6 +22,11 @@ function saveSettings(s) {
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
 }
 let settings = loadSettings();
+// 廃止済みのモデルIDが保存されていたら後継に置き換えて保存し直す(設定画面の表示もそろえるため)
+if (settings.geminiModel && gemini.normalizeModelId(settings.geminiModel) !== settings.geminiModel) {
+  settings.geminiModel = gemini.normalizeModelId(settings.geminiModel);
+  saveSettings(settings);
+}
 gemini.setModelOverride(settings.geminiModel);
 
 // ---------- ユーティリティ ----------
@@ -320,7 +325,7 @@ $('#tpl-add-btn').addEventListener('click', () => {
 /** 解析完了メッセージ。モデルが自動で切り替わったときだけ、その旨を添える */
 function analyzeDoneMessage(result) {
   const note = result.note ? ': ' + result.note : '';
-  const fallback = result.fellBack ? ` (${result.model} に自動切替)` : '';
+  const fallback = result.fellBack ? ` (${result.fallbackReason}、${result.model} に自動切替)` : '';
   return `✅ 解析完了${note}${fallback} — 内容を確認・修正して保存してください`;
 }
 
@@ -1042,8 +1047,10 @@ $('#test-gemini-btn').addEventListener('click', async (e) => {
   e.target.disabled = true;
   try {
     // 保存前でも、いま選んでいるモデルで試せるようにする
-    const { model } = await gemini.testConnection(key, readModelSetting());
-    toast(`✅ Gemini接続OK (${model})`, 3500);
+    const { model, served } = await gemini.testConnection(key, readModelSetting());
+    // 廃止モデルは別モデルに転送されて応答するので、実際に応答したモデルが違えば併記する
+    const routed = served && !served.startsWith(model) ? ` → 実際の応答: ${served}` : '';
+    toast(`✅ Gemini接続OK (${model}${routed})`, 4500);
   } catch (err) {
     toast(`⚠️ ${err.message}`);
   } finally {
@@ -1063,7 +1070,8 @@ function renderAiLog() {
     `呼び出し ${s.calls}回 / 失敗 ${s.failedCalls}回 (${pct(s.failedCalls, s.calls)}%) / 自動切替 ${s.fellBackCalls}回`,
     ...s.byModel.map(m => {
       const reasons = Object.entries(m.reasons).map(([k, v]) => `${k}×${v}`).join(', ');
-      return `・${m.model}: 試行${m.attempts} 失敗${m.failures} (${pct(m.failures, m.attempts)}%) 平均${(m.avgMs / 1000).toFixed(1)}秒${reasons ? ` [${reasons}]` : ''}`;
+      const routed = m.served.filter(v => !v.startsWith(m.model));
+      return `・${m.model}${routed.length ? `(実際の応答: ${routed.join(', ')})` : ''}: 試行${m.attempts} 失敗${m.failures} (${pct(m.failures, m.attempts)}%) 平均${(m.avgMs / 1000).toFixed(1)}秒${reasons ? ` [${reasons}]` : ''}`;
     }),
   ];
   $('#ai-log-summary').textContent = lines.join('\n');

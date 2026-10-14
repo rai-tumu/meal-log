@@ -1,5 +1,5 @@
 // Service Worker — アプリシェルをキャッシュしてオフラインでも起動可能にする
-const CACHE_NAME = 'meallog-v8';
+const CACHE_NAME = 'meallog-v9';
 const APP_SHELL = [
   './',
   './index.html',

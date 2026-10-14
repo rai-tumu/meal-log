@@ -2,15 +2,37 @@
 
 // ---------- モデル選択 ----------
 // 実測(2026-08〜09: AI呼び出し111回 / 28日、平均4回/日・ピーク8回/日)にもとづく既定値。
-//   写真解析(月32回)   … 盛り付けから分量を見積もる部分に精度が効くので、最上位のFlashを使う。
+//   写真解析(月32回)   … 盛り付けから分量を見積もる部分に精度が効くので、最新のFlashを使う。
 //   提案(月30回程度)   … 好みの読み取りと献立の組み立ては推論力が効くので、写真と同じモデル。
-//   テキスト解析(月79回) … 回数が多く精度差も出にくい。単価は2.5 Flashと同額のまま世代だけ
-//                          新しくできるFlash-Liteに置く。
-export const VISION_MODEL = 'gemini-3.5-flash';
+//   テキスト解析(月79回) … 回数が多く精度差も出にくいので、無料枠の広いFlash-Liteに置く。
+// 3.8 Flash は無料枠の1日上限が小さい(20回/日程度)が、写真+提案は平均2回/日なので収まる。
+export const VISION_MODEL = 'gemini-3.8-flash';
 export const TEXT_MODEL = 'gemini-3.5-flash-lite';
-export const SUGGEST_MODEL = 'gemini-3.5-flash';
-// モデル廃止(404)や上限超過(429)のときに落とす先。常に枠の広い世代を置くこと。
-export const FALLBACK_MODEL = 'gemini-2.5-flash';
+export const SUGGEST_MODEL = 'gemini-3.8-flash';
+// 失敗時に落とす先。常に枠が広く、廃止予定のない世代を置くこと
+// (以前の gemini-2.5-flash は 2026-10 に提供終了予定のため差し替えた)。
+export const FALLBACK_MODEL = 'gemini-3.5-flash-lite';
+// 落とす先そのもの(テキスト解析の既定)が失敗したときの落とし先
+const SECONDARY_FALLBACK_MODEL = 'gemini-3.6-flash';
+
+const fallbackFor = (model) => (model === FALLBACK_MODEL ? SECONDARY_FALLBACK_MODEL : FALLBACK_MODEL);
+
+// 廃止されたモデルIDの読み替え。廃止モデルはエラーにならず別モデルへ黙って転送されたり、
+// 提供終了でフォールバック続きになったりするため、保存済みの設定もここで新しいIDに寄せる。
+// 値が空文字なら「自動(用途別の既定)」に戻す。
+const REPLACED_MODELS = {
+  'gemini-3.5-flash': 'gemini-3.8-flash', // 2026-10-08 廃止。API上は 3.6 Flash へ転送される
+  'gemini-3.7-flash': 'gemini-3.8-flash', // 2026-10-08 廃止。API上は 3.8 Flash へ転送される
+  'gemini-2.5-flash': '',                 // 2026-10 提供終了予定
+  'gemini-2.5-flash-lite': '',
+  'gemini-2.5-pro': '',
+};
+
+/** 廃止済みのモデルIDを後継に読み替える。該当しなければそのまま返す */
+export function normalizeModelId(model) {
+  const id = (model || '').trim();
+  return Object.hasOwn(REPLACED_MODELS, id) ? REPLACED_MODELS[id] : id;
+}
 
 // 用途(kind)ごとの既定モデル
 const MODEL_BY_KIND = {
@@ -24,7 +46,6 @@ export const MODEL_OPTIONS = [
   { value: '', label: `自動(写真・提案: ${VISION_MODEL} / テキスト: ${TEXT_MODEL})` },
   { value: VISION_MODEL, label: `${VISION_MODEL}(すべてこれで解析)` },
   { value: TEXT_MODEL, label: `${TEXT_MODEL}(すべてこれで解析)` },
-  { value: FALLBACK_MODEL, label: `${FALLBACK_MODEL}(すべてこれで解析)` },
 ];
 
 const endpointFor = (model) =>
@@ -33,7 +54,7 @@ const endpointFor = (model) =>
 // 設定画面で明示指定されたモデルID。空なら用途別の既定(VISION/TEXT)を使う。
 let modelOverride = '';
 export function setModelOverride(model) {
-  modelOverride = (model || '').trim();
+  modelOverride = normalizeModelId(model);
 }
 
 // このセッションで使えないと分かったモデルと、使わない期限(ms)。毎回1回分を無駄打ちしないよう覚えておく。
@@ -49,9 +70,11 @@ function isUnavailable(model) {
   return false;
 }
 
+const preferredModel = (kind) => modelOverride || MODEL_BY_KIND[kind] || TEXT_MODEL;
+
 function resolveModel(kind) {
-  const model = modelOverride || MODEL_BY_KIND[kind] || TEXT_MODEL;
-  return isUnavailable(model) ? FALLBACK_MODEL : model;
+  const model = preferredModel(kind);
+  return isUnavailable(model) ? fallbackFor(model) : model;
 }
 
 // ---------- タイムアウト・生成設定 ----------
@@ -111,7 +134,7 @@ export function clearCallLog() {
 /**
  * ログの集計。呼び出し(callId)単位の成否と、モデル別の試行成績を返す。
  * @returns {{calls: number, failedCalls: number, fellBackCalls: number,
- *   byModel: Array<{model, attempts, failures, avgMs, reasons: object}>}}
+ *   byModel: Array<{model, attempts, failures, avgMs, reasons: object, served: string[]}>}}
  */
 export function summarizeCallLog(log = readLog()) {
   const calls = new Map();
@@ -122,8 +145,9 @@ export function summarizeCallLog(log = readLog()) {
     if (e.fellBack) c.fellBack = true;
     calls.set(e.callId, c);
 
-    const m = models.get(e.model) || { model: e.model, attempts: 0, failures: 0, totalMs: 0, reasons: {} };
+    const m = models.get(e.model) || { model: e.model, attempts: 0, failures: 0, totalMs: 0, reasons: {}, served: [] };
     m.attempts++;
+    if (e.served && !m.served.includes(e.served)) m.served.push(e.served);
     m.totalMs += e.ms || 0;
     if (!e.ok) {
       m.failures++;
@@ -296,6 +320,17 @@ function userMessage(err, { model, kind, parseErrorMessage }) {
   return `Gemini APIエラー (${err.status})${apiMsg ? ': ' + apiMsg.slice(0, 100) : ''}`;
 }
 
+/** フォールバックした理由を、解析結果の横に出せる短い言葉にする */
+function fallbackReasonOf(err) {
+  if (err.reason === 'timeout') return '応答が遅すぎたため';
+  if (err.reason === 'network') return '通信エラーのため';
+  if (err.reason === 'finish') return `出力が途中で切れたため(${err.finishReason})`;
+  if (err.reason === 'parse') return '応答を読み取れなかったため';
+  if (err.status === 429) return '利用上限(429)に達したため';
+  if (err.status === 404) return 'モデルが使えない(404)ため';
+  return `エラー(${err.status})のため`;
+}
+
 /** base64のinline_dataから、送った画像のおおよそのKBを出す(ログ用) */
 function imageKB(parts) {
   const b64 = parts.find(p => p.inline_data)?.inline_data.data;
@@ -308,7 +343,7 @@ function imageKB(parts) {
  * - タイムアウトは同じモデルだと再び遅いので、再試行せずフォールバックへ回す。
  * - それでも失敗したら、枠が広く応答の速いモデルへ1度だけ落として続行する。
  * 記録できないより、少し精度の落ちるモデルでも記録できる方を優先する。
- * @returns {Promise<{parsed: object, model: string, fellBack: boolean}>}
+ * @returns {Promise<{parsed: object, model: string, fellBack: boolean, fallbackReason: string}>}
  */
 async function callGeminiJson({ apiKey, parts, temperature, parseErrorMessage, kind = 'text' }) {
   if (navigator.onLine === false) {
@@ -317,7 +352,9 @@ async function callGeminiJson({ apiKey, parts, temperature, parseErrorMessage, k
   const callId = Math.random().toString(36).slice(2, 10);
   const kb = imageKB(parts);
   let model = resolveModel(kind);
-  let fellBack = false;
+  // 直前の404/429で既定モデルを避けている間も、切り替わっていることが画面で分かるようにする
+  let fellBack = model !== preferredModel(kind);
+  let fallbackReason = fellBack ? `${preferredModel(kind)} が直前に失敗したため` : '';
   let retried = false;
 
   for (;;) {
@@ -328,10 +365,12 @@ async function callGeminiJson({ apiKey, parts, temperature, parseErrorMessage, k
       const data = await postJson({ apiKey, model, body, timeoutMs: TIMEOUT_MS[kind] || TIMEOUT_MS.text });
       const u = data?.usageMetadata || {};
       entry.tokens = { prompt: u.promptTokenCount, thoughts: u.thoughtsTokenCount, output: u.candidatesTokenCount };
+      // 廃止モデルは別モデルへ黙って転送されるので、実際に応答したモデルも残す
+      if (data?.modelVersion) entry.served = data.modelVersion;
       const parsed = parseCandidate(data);
       appendLog({ ...entry, ok: true, ms: Date.now() - started,
         items: (parsed.items || parsed.suggestions || []).length });
-      return { parsed, model, fellBack };
+      return { parsed, model, fellBack, fallbackReason };
     } catch (err) {
       if (!(err instanceof GeminiError)) throw err;
       appendLog({ ...entry, ok: false, ms: Date.now() - started, reason: err.reason,
@@ -343,10 +382,11 @@ async function callGeminiJson({ apiKey, parts, temperature, parseErrorMessage, k
         await sleep(RETRY_DELAY_MS);
         continue;
       }
-      if (model !== FALLBACK_MODEL && canFallBack(err)) {
+      if (!fellBack && canFallBack(err)) {
         if (err.status === 404) unavailableUntil.set(model, Infinity);
         if (err.status === 429) unavailableUntil.set(model, Date.now() + RATE_LIMIT_COOLDOWN_MS);
-        model = FALLBACK_MODEL;
+        fallbackReason = `${model} が${fallbackReasonOf(err)}`;
+        model = fallbackFor(model);
         fellBack = true;
         retried = true; // フォールバック先では再試行しない(待ち時間が延びすぎるため)
         continue;
@@ -358,8 +398,8 @@ async function callGeminiJson({ apiKey, parts, temperature, parseErrorMessage, k
 
 /**
  * 食事を解析する。imageかtextのどちらかを渡す。
- * @returns {Promise<{items: Array, note: string, model: string, fellBack: boolean}>}
- *   model は実際に応答したモデルID、fellBack はフォールバックが起きたかどうか
+ * @returns {Promise<{items: Array, note: string, model: string, fellBack: boolean, fallbackReason: string}>}
+ *   model は実際に応答したモデルID、fellBack はフォールバックが起きたかどうか、fallbackReason はその理由
  */
 export async function analyzeFood({ apiKey, image, text }) {
   const parts = [{ text: PROMPT }];
@@ -370,7 +410,7 @@ export async function analyzeFood({ apiKey, image, text }) {
     parts.push({ text: `食事内容: ${text}` });
   }
 
-  const { parsed, model, fellBack } = await callGeminiJson({
+  const { parsed, model, fellBack, fallbackReason } = await callGeminiJson({
     apiKey,
     parts,
     temperature: 0.2,
@@ -386,7 +426,7 @@ export async function analyzeFood({ apiKey, image, text }) {
     carbs: Number(it.carbs) || 0,
   })).filter(it => it.name);
 
-  return { items, note: String(parsed.note ?? ''), model, fellBack };
+  return { items, note: String(parsed.note ?? ''), model, fellBack, fallbackReason };
 }
 
 const SUGGEST_PROMPT = `あなたは、その人の食事履歴を熟知した管理栄養士です。
@@ -477,19 +517,20 @@ export async function suggestMeals({ apiKey, profile, mode = 'any', mood = '' })
 /**
  * 設定画面の接続テスト用。写真解析に使うモデルで疎通を確認する
  * (テキスト用は写真用より枠の広いモデルなので、こちらが通れば実用上は足りる)。
- * @returns {Promise<{model: string}>} 応答したモデルID
+ * @returns {Promise<{model: string, served: string}>} 指定したモデルIDと、実際に応答したモデル(modelVersion)
  */
 export async function testConnection(apiKey, model) {
   // 空文字は「自動」の意味なので、写真解析の既定モデルを試す
-  const target = (model || '').trim() || VISION_MODEL;
+  const target = normalizeModelId(model) || VISION_MODEL;
   const body = JSON.stringify({ contents: [{ parts: [{ text: 'test: reply "ok"' }] }] });
+  let data;
   try {
-    await postJson({ apiKey, model: target, body, timeoutMs: TEST_TIMEOUT_MS });
+    data = await postJson({ apiKey, model: target, body, timeoutMs: TEST_TIMEOUT_MS });
   } catch (err) {
     if (err.status === 404) throw new Error(`モデル ${target} を利用できません。モデルIDを確認してください。`);
     if (err.reason === 'timeout') throw new Error(`接続失敗 (${TEST_TIMEOUT_MS / 1000}秒以内に応答なし)`);
     if (err.reason === 'network') throw new Error('接続失敗 (通信エラー)');
     throw new Error(`接続失敗 (${err.status || err.reason})`);
   }
-  return { model: target };
+  return { model: target, served: data?.modelVersion || '' };
 }
